@@ -329,17 +329,17 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
         if 'Customer Referrer Mobile' in onboarding_df.columns:
             onboarding_df['Customer Referrer Mobile'] = onboarding_df['Customer Referrer Mobile'].apply(clean_mobile_number)
         
-        # Find transaction type columns
+        # Find transaction type columns based on your actual column names
         deposit_tx_type_col = find_column(deposit_df, ['Transaction Type', 'transaction_type', 'TransactionType', 'Type', 'transaction type', 'txn_type', 'TXN_TYPE', 'transactionType'])
-        ticket_tx_type_col = find_column(ticket_df, ['Transaction Type', 'transaction_type', 'TransactionType', 'Type', 'transaction type', 'txn_type', 'TXN_TYPE', 'transactionType'])
+        ticket_tx_type_col = find_column(ticket_df, ['transaction_type', 'Transaction Type', 'TransactionType', 'Type', 'transaction type', 'txn_type', 'TXN_TYPE', 'transactionType'])
         scan_tx_type_col = find_column(scan_df, ['Transaction Type', 'transaction_type', 'TransactionType', 'Type', 'transaction type', 'txn_type', 'TXN_TYPE', 'transactionType'])
         
-        # Find customer mobile columns
+        # Find customer mobile columns based on your actual column names
         deposit_customer_col = find_column(deposit_df, ['User Identifier', 'user_id', 'UserIdentifier', 'Customer Mobile', 'customer_mobile', 'Mobile', 'USER_ID', 'User ID', 'UserID'])
-        ticket_customer_col = find_column(ticket_df, ['User Identifier', 'user_id', 'UserIdentifier', 'Customer Mobile', 'customer_mobile', 'Mobile', 'USER_ID', 'User ID', 'UserID', 'created_by'])
+        ticket_customer_col = find_column(ticket_df, ['user_id', 'User Identifier', 'UserIdentifier', 'Customer Mobile', 'customer_mobile', 'Mobile', 'USER_ID', 'User ID', 'UserID', 'created_by'])
         scan_customer_col = find_column(scan_df, ['User Identifier', 'user_id', 'UserIdentifier', 'Customer Mobile', 'customer_mobile', 'Mobile', 'USER_ID', 'User ID', 'UserID', 'Created By'])
         
-        # Find DSA/agent columns
+        # Find DSA/agent columns based on your actual column names
         deposit_dsa_col = find_column(deposit_df, ['Created By', 'created_by', 'CreatedBy', 'DSA Mobile', 'dsa_mobile', 'Agent Mobile', 'agent_mobile', 'Referrer Mobile'])
         
         # Clean mobile numbers in other dataframes
@@ -383,7 +383,7 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
         
         # Get names from ticket data
         if ticket_customer_col:
-            ticket_name_col = find_column(ticket_df, ['Full Name', 'full_name', 'Name', 'Customer Name', 'customer_name'])
+            ticket_name_col = find_column(ticket_df, ['full_name', 'Full Name', 'Name', 'Customer Name', 'customer_name'])
             if ticket_name_col:
                 for _, row in ticket_df.dropna(subset=[ticket_customer_col]).iterrows():
                     mobile = row[ticket_customer_col]
@@ -439,7 +439,7 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
         
         # Analyze ticket purchases
         if ticket_tx_type_col and ticket_customer_col:
-            # FIXED: Use the variable, not hardcoded column name
+            # Use the variable, not hardcoded column name - Note: ticket data uses lowercase 'transaction_type'
             customer_tickets = ticket_df[ticket_df[ticket_tx_type_col] == 'DR'].copy()
         elif ticket_customer_col:
             # If no transaction type column, assume all are ticket purchases
@@ -460,7 +460,7 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
         
         # Analyze scan transactions
         if scan_tx_type_col and scan_customer_col:
-            # FIXED: Use the variable, not hardcoded column name
+            # Use the variable, not hardcoded column name
             customer_scans = scan_df[scan_df[scan_tx_type_col] == 'DR'].copy()
         elif scan_customer_col:
             # If no transaction type column, assume all are scan transactions
