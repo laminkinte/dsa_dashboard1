@@ -7,6 +7,7 @@ from io import BytesIO
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import math
 
 warnings.filterwarnings('ignore')
 
@@ -82,6 +83,8 @@ if 'filtered_report_1' not in st.session_state:
     st.session_state.filtered_report_1 = {}
 if 'filtered_report_2' not in st.session_state:
     st.session_state.filtered_report_2 = {}
+if 'payment_report_data' not in st.session_state:
+    st.session_state.payment_report_data = {}
 if 'show_columns' not in st.session_state:
     st.session_state.show_columns = True
 
@@ -809,6 +812,107 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
         st.error(f"Traceback: {traceback.format_exc()}")
         return None
 
+def generate_payment_report(report_1_data, report_2_data):
+    """Generate Payment report combining earnings from Report 1 and Report 2"""
+    try:
+        payment_records = []
+        
+        # Process Report 1 payments (Qualified Customers)
+        report1_payments = {}
+        if (report_1_data and "qualified_customers" in report_1_data and 
+            not report_1_data["qualified_customers"].empty):
+            
+            # Get rows with payment data (first rows per DSA where Customer Count is filled)
+            payment_rows = report_1_data["qualified_customers"][
+                report_1_data["qualified_customers"]['Customer Count'] != ''
+            ].copy()
+            
+            if not payment_rows.empty:
+                for _, row in payment_rows.iterrows():
+                    dsa_mobile = row['dsa_mobile']
+                    # Clean the payment value
+                    payment_value = row['Payment (Customer Count *40)']
+                    if pd.isna(payment_value) or payment_value == '':
+                        payment_amount = 0
+                    else:
+                        # Try to convert to numeric
+                        try:
+                            payment_amount = float(str(payment_value).replace(',', '').strip())
+                        except:
+                            payment_amount = 0
+                    
+                    report1_payments[dsa_mobile] = payment_amount
+        
+        # Process Report 2 payments (Not Onboarded Customers)
+        report2_payments = {}
+        if (report_2_data and "report_2_results" in report_2_data and 
+            not report_2_data["report_2_results"].empty):
+            
+            # Get rows with payment data (rows where Customer Count is filled)
+            payment_rows = report_2_data["report_2_results"][
+                (report_2_data["report_2_results"]['Customer Count'] != '') &
+                (report_2_data["report_2_results"]['Payment'] != '')
+            ].copy()
+            
+            if not payment_rows.empty:
+                for _, row in payment_rows.iterrows():
+                    dsa_mobile = row['dsa_mobile']
+                    if dsa_mobile:  # Skip empty DSA rows
+                        # Clean the payment value
+                        payment_value = row['Payment']
+                        if pd.isna(payment_value) or payment_value == '':
+                            payment_amount = 0
+                        else:
+                            # Try to convert to numeric
+                            try:
+                                payment_amount = float(str(payment_value).replace(',', '').strip())
+                            except:
+                                payment_amount = 0
+                        
+                        report2_payments[dsa_mobile] = payment_amount
+        
+        # Combine all DSAs from both reports
+        all_dsas = set(list(report1_payments.keys()) + list(report2_payments.keys()))
+        
+        # Create payment records
+        for dsa_mobile in sorted(all_dsas):
+            payment_qualified = report1_payments.get(dsa_mobile, 0)
+            payment_not_onboarded = report2_payments.get(dsa_mobile, 0)
+            total_payable = payment_qualified + payment_not_onboarded
+            
+            payment_records.append({
+                'DSA_Mobile': dsa_mobile,
+                'Payment for Qualified Customers': payment_qualified,
+                'Payment for not onboarded Customers': payment_not_onboarded,
+                'Total Amount Payable': total_payable
+            })
+        
+        # Calculate totals row
+        if payment_records:
+            total_qualified = sum(record['Payment for Qualified Customers'] for record in payment_records)
+            total_not_onboarded = sum(record['Payment for not onboarded Customers'] for record in payment_records)
+            total_overall = sum(record['Total Amount Payable'] for record in payment_records)
+            
+            # Add totals row
+            payment_records.append({
+                'DSA_Mobile': 'Total',
+                'Payment for Qualified Customers': total_qualified,
+                'Payment for not onboarded Customers': total_not_onboarded,
+                'Total Amount Payable': total_overall
+            })
+        
+        # Create DataFrame
+        payment_df = pd.DataFrame(payment_records)
+        
+        return payment_df
+        
+    except Exception as e:
+        st.error(f"Error generating Payment report: {str(e)}")
+        import traceback
+        st.error(f"Traceback: {traceback.format_exc()}")
+        return pd.DataFrame(columns=['DSA_Mobile', 'Payment for Qualified Customers', 
+                                     'Payment for not onboarded Customers', 'Total Amount Payable'])
+
 def create_excel_download(data, report_type):
     """Create Excel file for download"""
     try:
@@ -827,9 +931,11 @@ def create_excel_download(data, report_type):
                     data["scan_details"].to_excel(writer, index=False, sheet_name="Scan_Details")
                 if "deposit_details" in data and not data["deposit_details"].empty:
                     data["deposit_details"].to_excel(writer, index=False, sheet_name="Deposit_Details")
-            else:
+            elif report_type == "report_2":
                 if "report_2_results" in data and not data["report_2_results"].empty:
                     data["report_2_results"].to_excel(writer, index=False, sheet_name="DSA_Analysis")
+            elif report_type == "payment":
+                data.to_excel(writer, index=False, sheet_name="Payment_Report")
         
         output.seek(0)
         return output
@@ -879,7 +985,7 @@ def display_metrics(data, report_type):
             col3.metric("Qualified Customers", "0")
             col4.metric("Total Payment (GMD)", "GMD 0.00")
     
-    else:
+    elif report_type == "report_2":
         # REPORT 2 METRICS
         if "report_2_results" in data and not data["report_2_results"].empty:
             # Get summary rows (rows with Customer Count filled)
@@ -920,6 +1026,33 @@ def display_metrics(data, report_type):
             col2.metric("NO ONBOARDING Customers", "0")
             col3.metric("Total Tickets", "0")
             col4.metric("Total Payment (GMD)", "GMD 0.00")
+
+def display_payment_metrics(payment_df):
+    """Display key metrics for Payment report"""
+    if payment_df.empty or payment_df['DSA_Mobile'].iloc[-1] != 'Total':
+        return
+    
+    # Get totals from the last row
+    totals_row = payment_df.iloc[-1]
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        # Count DSAs (excluding the "Total" row)
+        total_dsas = len(payment_df) - 1
+        st.metric("Total DSAs", f"{total_dsas:,}")
+    
+    with col2:
+        total_qualified = totals_row['Payment for Qualified Customers']
+        st.metric("Qualified Customers Payment", f"GMD {total_qualified:,.2f}")
+    
+    with col3:
+        total_not_onboarded = totals_row['Payment for not onboarded Customers']
+        st.metric("Not Onboarded Customers Payment", f"GMD {total_not_onboarded:,.2f}")
+    
+    with col4:
+        total_payable = totals_row['Total Amount Payable']
+        st.metric("Total Amount Payable", f"GMD {total_payable:,.2f}")
 
 def display_filters():
     """Display filtering options in sidebar"""
@@ -999,10 +1132,12 @@ def filter_data(data, filters, report_type):
         if "dsa_summary" not in data or data["dsa_summary"].empty:
             return pd.DataFrame()
         df_to_filter = data["dsa_summary"].copy()
-    else:
+    elif report_type == "report_2":
         if "report_2_results" not in data or data["report_2_results"].empty:
             return pd.DataFrame()
         df_to_filter = data["report_2_results"].copy()
+    else:
+        return pd.DataFrame()
     
     # Apply DSA filter
     if filters["dsa_option"] == "Single DSA" and filters["selected_dsa"]:
@@ -1014,7 +1149,7 @@ def filter_data(data, filters, report_type):
     if report_type == "report_1":
         if filters["min_customers"] > 0 and "Customer_Count" in df_to_filter.columns:
             df_to_filter = df_to_filter[df_to_filter["Customer_Count"] >= filters["min_customers"]]
-    else:
+    elif report_type == "report_2":
         if filters["min_customers"] > 0 and 'Customer Count' in df_to_filter.columns:
             # Clean Customer Count column
             df_to_filter['Customer Count'] = pd.to_numeric(df_to_filter['Customer Count'].replace('', '0'), errors='coerce').fillna(0)
@@ -1032,7 +1167,7 @@ def filter_data(data, filters, report_type):
                 payment_by_dsa = payment_data.groupby("dsa_mobile")['Payment (Customer Count *40)'].first().reset_index()
                 valid_dsas = payment_by_dsa[payment_by_dsa['Payment (Customer Count *40)'] >= filters["min_payment"]]["dsa_mobile"]
                 df_to_filter = df_to_filter[df_to_filter["dsa_mobile"].isin(valid_dsas)]
-    else:
+    elif report_type == "report_2":
         if filters["min_payment"] > 0 and 'Payment' in df_to_filter.columns:
             # Clean Payment column
             df_to_filter['Payment'] = pd.to_numeric(df_to_filter['Payment'].replace('', '0'), errors='coerce').fillna(0)
@@ -1091,7 +1226,7 @@ def create_visualizations(data, report_type):
         
         return fig1, fig2
     
-    else:
+    elif report_type == "report_2":
         if "report_2_results" not in data or data["report_2_results"].empty:
             return None, None
         
@@ -1144,6 +1279,9 @@ def create_visualizations(data, report_type):
             fig2 = None
         
         return fig1, fig2
+    
+    else:
+        return None, None
 
 # Main application
 def main():
@@ -1195,6 +1333,16 @@ def main():
                 else:
                     st.warning("Report 2 processing completed with warnings")
             
+            # Generate Payment report
+            with st.spinner("Generating Payment Report..."):
+                payment_report = generate_payment_report(
+                    st.session_state.report_1_data, 
+                    st.session_state.report_2_data
+                )
+                if not payment_report.empty:
+                    st.session_state.payment_report_data = payment_report
+                    st.success("✓ Payment Report generated successfully!")
+            
             st.sidebar.success("✓ All files processed successfully!")
             
         except Exception as e:
@@ -1208,9 +1356,10 @@ def main():
     # Main content area
     if st.session_state.report_1_data or st.session_state.report_2_data:
         # Create tabs for different reports
-        tab1, tab2, tab3, tab4 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "📋 Report 1: DSA Performance", 
             "📊 Report 2: NO ONBOARDING Analysis", 
+            "💰 Payment Report",
             "📈 Visualizations", 
             "📥 Download Reports"
         ])
@@ -1365,9 +1514,98 @@ def main():
                 st.info("Report 2 data not available or empty.")
         
         with tab3:
+            if not st.session_state.payment_report_data.empty:
+                # Check if we need to regenerate with filtered data
+                data_to_display = None
+                if filters["apply_filters"]:
+                    with st.spinner("Regenerating Payment Report with filtered data..."):
+                        # Get filtered data
+                        filtered_report_1 = st.session_state.filtered_report_1 if st.session_state.filtered_report_1 else st.session_state.report_1_data
+                        filtered_report_2 = st.session_state.filtered_report_2 if st.session_state.filtered_report_2 else st.session_state.report_2_data
+                        
+                        # Regenerate payment report with filtered data
+                        data_to_display = generate_payment_report(filtered_report_1, filtered_report_2)
+                else:
+                    data_to_display = st.session_state.payment_report_data
+                
+                if data_to_display is not None and not data_to_display.empty:
+                    st.markdown('<div class="sub-header">💰 Payment Report: DSA Earnings Summary (GMD)</div>', unsafe_allow_html=True)
+                    
+                    # Display metrics
+                    display_payment_metrics(data_to_display)
+                    
+                    # Display the payment table
+                    st.markdown("#### Payment Summary")
+                    
+                    # Format the DataFrame for better display
+                    display_df = data_to_display.copy()
+                    
+                    # Format currency columns
+                    currency_columns = ['Payment for Qualified Customers', 'Payment for not onboarded Customers', 'Total Amount Payable']
+                    for col in currency_columns:
+                        display_df[col] = display_df[col].apply(lambda x: f"GMD {x:,.2f}" if pd.notna(x) and not isinstance(x, str) else x)
+                    
+                    # Display the table with special styling for the Total row
+                    st.dataframe(display_df, use_container_width=True)
+                    
+                    # Add summary statistics
+                    with st.expander("View Payment Statistics"):
+                        col1, col2 = st.columns(2)
+                        
+                        # Calculate statistics (excluding the Total row)
+                        if len(data_to_display) > 1:
+                            df_stats = data_to_display.iloc[:-1]  # Exclude Total row
+                            
+                            with col1:
+                                st.markdown("**Average Payments per DSA:**")
+                                avg_qualified = df_stats['Payment for Qualified Customers'].mean()
+                                avg_not_onboarded = df_stats['Payment for not onboarded Customers'].mean()
+                                avg_total = df_stats['Total Amount Payable'].mean()
+                                
+                                st.write(f"Average Qualified Payment: GMD {avg_qualified:,.2f}")
+                                st.write(f"Average Not Onboarded Payment: GMD {avg_not_onboarded:,.2f}")
+                                st.write(f"Average Total Payment: GMD {avg_total:,.2f}")
+                            
+                            with col2:
+                                st.markdown("**Payment Distribution:**")
+                                
+                                # Count DSAs with different payment types
+                                dsas_with_qualified = (df_stats['Payment for Qualified Customers'] > 0).sum()
+                                dsas_with_not_onboarded = (df_stats['Payment for not onboarded Customers'] > 0).sum()
+                                dsas_with_both = ((df_stats['Payment for Qualified Customers'] > 0) & 
+                                                  (df_stats['Payment for not onboarded Customers'] > 0)).sum()
+                                
+                                st.write(f"DSAs with Qualified Earnings: {dsas_with_qualified}")
+                                st.write(f"DSAs with Not Onboarded Earnings: {dsas_with_not_onboarded}")
+                                st.write(f"DSAs with Both Earnings: {dsas_with_both}")
+                        
+                        # Payment breakdown
+                        st.markdown("**Payment Breakdown:**")
+                        if not data_to_display.empty and data_to_display['DSA_Mobile'].iloc[-1] == 'Total':
+                            totals = data_to_display.iloc[-1]
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.write(f"**Total Qualified Payments:** GMD {totals['Payment for Qualified Customers']:,.2f}")
+                                st.write(f"**Total Not Onboarded Payments:** GMD {totals['Payment for not onboarded Customers']:,.2f}")
+                                st.write(f"**Grand Total Payable:** GMD {totals['Total Amount Payable']:,.2f}")
+                            
+                            with col2:
+                                if totals['Total Amount Payable'] > 0:
+                                    qualified_pct = (totals['Payment for Qualified Customers'] / totals['Total Amount Payable']) * 100
+                                    not_onboarded_pct = (totals['Payment for not onboarded Customers'] / totals['Total Amount Payable']) * 100
+                                    
+                                    st.write(f"**Qualified Payments:** {qualified_pct:.1f}%")
+                                    st.write(f"**Not Onboarded Payments:** {not_onboarded_pct:.1f}%")
+                else:
+                    st.info("No payment data available. Please check if both Report 1 and Report 2 have been processed.")
+            else:
+                st.info("Payment report not available yet. Please upload and process the data files first.")
+        
+        with tab4:
             st.markdown('<div class="sub-header">Data Visualizations</div>', unsafe_allow_html=True)
             
-            # Create visualizations
+            # Create visualizations for Report 1
             if st.session_state.report_1_data:
                 # Use filtered data if available
                 data_for_viz_1 = st.session_state.filtered_report_1 if st.session_state.filtered_report_1 else st.session_state.report_1_data
@@ -1380,6 +1618,7 @@ def main():
                 if not fig1_r1 and not fig2_r1:
                     st.info("No visualization data available for Report 1.")
             
+            # Create visualizations for Report 2
             if st.session_state.report_2_data and "report_2_results" in st.session_state.report_2_data and not st.session_state.report_2_data["report_2_results"].empty:
                 # Use filtered data if available
                 data_for_viz_2 = st.session_state.filtered_report_2 if st.session_state.filtered_report_2 else st.session_state.report_2_data
@@ -1391,11 +1630,71 @@ def main():
                     st.plotly_chart(fig2_r2, use_container_width=True)
                 if not fig1_r2 and not fig2_r2:
                     st.info("No visualization data available for Report 2.")
+            
+            # Add Payment report visualization
+            if not st.session_state.payment_report_data.empty:
+                st.markdown("#### Payment Report Visualizations")
+                
+                # Use filtered data if available
+                if filters["apply_filters"]:
+                    # Regenerate payment report with filtered data
+                    filtered_report_1 = st.session_state.filtered_report_1 if st.session_state.filtered_report_1 else st.session_state.report_1_data
+                    filtered_report_2 = st.session_state.filtered_report_2 if st.session_state.filtered_report_2 else st.session_state.report_2_data
+                    payment_data = generate_payment_report(filtered_report_1, filtered_report_2)
+                else:
+                    payment_data = st.session_state.payment_report_data
+                
+                if not payment_data.empty and len(payment_data) > 1:  # Excluding Total row
+                    # Exclude the Total row for visualizations
+                    viz_data = payment_data[payment_data['DSA_Mobile'] != 'Total'].copy()
+                    
+                    if not viz_data.empty:
+                        # Create visualization for top earners
+                        viz_data_sorted = viz_data.nlargest(15, 'Total Amount Payable')
+                        
+                        fig_payment = go.Figure()
+                        fig_payment.add_trace(go.Bar(
+                            x=viz_data_sorted['DSA_Mobile'],
+                            y=viz_data_sorted['Payment for Qualified Customers'],
+                            name='Qualified Customers',
+                            marker_color='#2E86AB'
+                        ))
+                        fig_payment.add_trace(go.Bar(
+                            x=viz_data_sorted['DSA_Mobile'],
+                            y=viz_data_sorted['Payment for not onboarded Customers'],
+                            name='Not Onboarded Customers',
+                            marker_color='#A23B72'
+                        ))
+                        
+                        fig_payment.update_layout(
+                            title='Top 15 DSAs by Total Payment (GMD)',
+                            xaxis_title='DSA Mobile',
+                            yaxis_title='Payment Amount (GMD)',
+                            barmode='stack',
+                            height=500
+                        )
+                        
+                        st.plotly_chart(fig_payment, use_container_width=True)
+                        
+                        # Pie chart showing payment distribution
+                        if len(payment_data) > 0 and payment_data['DSA_Mobile'].iloc[-1] == 'Total':
+                            totals = payment_data.iloc[-1]
+                            if totals['Total Amount Payable'] > 0:
+                                fig_pie = go.Figure(data=[go.Pie(
+                                    labels=['Qualified Customers', 'Not Onboarded Customers'],
+                                    values=[totals['Payment for Qualified Customers'], totals['Payment for not onboarded Customers']],
+                                    hole=0.3,
+                                    marker_colors=['#2E86AB', '#A23B72']
+                                )])
+                                fig_pie.update_layout(
+                                    title='Overall Payment Distribution'
+                                )
+                                st.plotly_chart(fig_pie, use_container_width=True)
         
-        with tab4:
+        with tab5:
             st.markdown('<div class="sub-header">Download Reports (GMD)</div>', unsafe_allow_html=True)
             
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             
             with col1:
                 if st.session_state.report_1_data:
@@ -1445,6 +1744,39 @@ def main():
                         file_name=f"DSA_NO_ONBOARDING_Analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                         mime="text/csv"
                     )
+            
+            with col3:
+                if not st.session_state.payment_report_data.empty:
+                    st.markdown("#### Payment Report")
+                    
+                    # Determine which data to use for download
+                    if filters["apply_filters"]:
+                        filtered_report_1 = st.session_state.filtered_report_1 if st.session_state.filtered_report_1 else st.session_state.report_1_data
+                        filtered_report_2 = st.session_state.filtered_report_2 if st.session_state.filtered_report_2 else st.session_state.report_2_data
+                        payment_data_for_download = generate_payment_report(filtered_report_1, filtered_report_2)
+                    else:
+                        payment_data_for_download = st.session_state.payment_report_data
+                    
+                    # Excel download for Payment report
+                    if not payment_data_for_download.empty:
+                        excel_file_payment = create_excel_download(payment_data_for_download, "payment")
+                        
+                        if excel_file_payment:
+                            st.download_button(
+                                label="📥 Download Payment Report (Excel)",
+                                data=excel_file_payment,
+                                file_name=f"DSA_Payment_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                        
+                        # CSV download
+                        csv_payment = payment_data_for_download.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="📥 Download Payment Report (CSV)",
+                            data=csv_payment,
+                            file_name=f"DSA_Payment_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv"
+                        )
     
     else:
         # Show instructions when no data is uploaded
@@ -1461,7 +1793,7 @@ def main():
            - Conversion Data (CSV)
         
         ### Features:
-        - 📋 **Two comprehensive reports** with different analysis approaches
+        - 📋 **Three comprehensive reports** with different analysis approaches
         - 🔍 **Interactive filtering** by DSA, date range, and performance metrics
         - 📊 **Data visualizations** for insights
         - 📥 **Download reports** in Excel or CSV format
@@ -1469,8 +1801,9 @@ def main():
         - 💰 **GMD currency** support for all financial metrics
         
         ### Report Details:
-        - **Report 1**: Shows qualified customers who deposited AND bought ticket/did scan
-        - **Report 2**: Shows ONLY NO ONBOARDING customers with deposit and ticket/scan activity
+        - **Report 1**: Shows qualified customers who deposited AND bought ticket/did scan (GMD 40 per customer)
+        - **Report 2**: Shows ONLY NO ONBOARDING customers with deposit and ticket/scan activity (GMD 25 per customer)
+        - **Payment Report**: Combines earnings from Report 1 and Report 2 with total amount payable
         
         ### Sample Data Format:
         The dashboard is designed to work with the sample data formats you provided:
