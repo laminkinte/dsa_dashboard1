@@ -54,6 +54,15 @@ st.markdown("""
         font-weight: bold;
         color: #059669;
     }
+    .column-display {
+        font-size: 0.8rem;
+        background-color: #f1f5f9;
+        padding: 0.5rem;
+        border-radius: 0.25rem;
+        margin-bottom: 0.5rem;
+        max-height: 200px;
+        overflow-y: auto;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -69,6 +78,12 @@ if 'report_1_data' not in st.session_state:
     st.session_state.report_1_data = {}
 if 'report_2_data' not in st.session_state:
     st.session_state.report_2_data = {}
+if 'filtered_report_1' not in st.session_state:
+    st.session_state.filtered_report_1 = {}
+if 'filtered_report_2' not in st.session_state:
+    st.session_state.filtered_report_2 = {}
+if 'show_columns' not in st.session_state:
+    st.session_state.show_columns = True
 
 def clean_mobile_number(mobile):
     """Clean mobile numbers to ensure consistency"""
@@ -109,12 +124,111 @@ def find_column(df, possible_names):
             return name
     return None
 
-def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_df):
-    """Process data for Report 1"""
+def parse_date(date_str, date_formats=None):
+    """Parse date string with multiple formats"""
+    if pd.isna(date_str):
+        return None
+    
+    if date_formats is None:
+        date_formats = [
+            '%Y-%m-%d %H:%M:%S',
+            '%Y-%m-%d',
+            '%d/%m/%Y %H:%M:%S',
+            '%d/%m/%Y',
+            '%m/%d/%Y %H:%M:%S',
+            '%m/%d/%Y',
+            '%Y-%m-%d %H:%M:%S.%f',
+            '%Y-%m-%dT%H:%M:%S',
+            '%Y-%m-%dT%H:%M:%S.%f'
+        ]
+    
+    for fmt in date_formats:
+        try:
+            return datetime.strptime(str(date_str).strip(), fmt)
+        except (ValueError, TypeError):
+            continue
+    
+    # Try pandas to_datetime as fallback
+    try:
+        return pd.to_datetime(date_str)
+    except:
+        return None
+
+def filter_by_date(df, date_col, start_date, end_date):
+    """Filter dataframe by date range"""
+    if df.empty or date_col not in df.columns:
+        return df
+    
+    df_filtered = df.copy()
+    
+    # Try to parse the date column
+    try:
+        # Create a new column with parsed dates
+        df_filtered['_parsed_date'] = df_filtered[date_col].apply(lambda x: parse_date(x))
+        
+        # Filter by date range
+        if start_date:
+            start_date_dt = datetime.combine(start_date, datetime.min.time())
+            df_filtered = df_filtered[df_filtered['_parsed_date'] >= start_date_dt]
+        
+        if end_date:
+            end_date_dt = datetime.combine(end_date, datetime.max.time())
+            df_filtered = df_filtered[df_filtered['_parsed_date'] <= end_date_dt]
+        
+        # Drop the temporary column
+        df_filtered = df_filtered.drop(columns=['_parsed_date'], errors='ignore')
+        
+    except Exception as e:
+        st.sidebar.warning(f"Could not filter by date: {str(e)}")
+        return df
+    
+    return df_filtered
+
+def find_date_column(df):
+    """Find date column in dataframe"""
+    date_cols = ['created_at', 'Created At', 'createdAt', 'CreatedAt', 
+                 'date', 'Date', 'timestamp', 'Timestamp', 'time', 'Time',
+                 'Registration Date', 'Updated At', 'Created At']
+    
+    for col in date_cols:
+        if col in df.columns:
+            return col
+    
+    # Look for columns with 'date' or 'time' in name
+    for col in df.columns:
+        col_lower = str(col).lower()
+        if 'date' in col_lower or 'time' in col_lower or 'created' in col_lower:
+            return col
+    
+    return None
+
+def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_df, start_date=None, end_date=None):
+    """Process data for Report 1 with date filtering"""
     try:
         # Clean column names
         for df in [onboarding_df, ticket_df, conversion_df, deposit_df, scan_df]:
             df.columns = [str(col).strip() for col in df.columns]
+        
+        # Apply date filtering if dates are provided
+        if start_date or end_date:
+            # Find date columns in each dataframe
+            ticket_date_col = find_date_column(ticket_df)
+            deposit_date_col = find_date_column(deposit_df)
+            scan_date_col = find_date_column(scan_df)
+            onboarding_date_col = find_date_column(onboarding_df)
+            
+            # Apply date filters
+            if ticket_date_col:
+                ticket_df = filter_by_date(ticket_df, ticket_date_col, start_date, end_date)
+            
+            if deposit_date_col:
+                deposit_df = filter_by_date(deposit_df, deposit_date_col, start_date, end_date)
+            
+            if scan_date_col:
+                scan_df = filter_by_date(scan_df, scan_date_col, start_date, end_date)
+            
+            if onboarding_date_col:
+                onboarding_df = filter_by_date(onboarding_df, onboarding_date_col, start_date, end_date)
         
         # Fix ticket data if needed
         if ticket_df.shape[1] == 29:
@@ -300,7 +414,8 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
             "onboarded_customers": onboarded_customers,
             "ticket_details": ticket_df,
             "scan_details": scan_df,
-            "deposit_details": deposit_df
+            "deposit_details": deposit_df,
+            "filtered_dates": {"start_date": start_date, "end_date": end_date}
         }
         
     except Exception as e:
@@ -309,19 +424,48 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         st.error(f"Traceback: {traceback.format_exc()}")
         return None
 
-def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
-    """Process data for Report 2 - EXACTLY like the original code but with better column handling"""
+def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=None, end_date=None):
+    """Process data for Report 2 with date filtering"""
     try:
         # Clean column names
         for df in [onboarding_df, deposit_df, ticket_df, scan_df]:
             df.columns = [str(col).strip() for col in df.columns]
         
-        # Display column names for debugging
-        st.sidebar.info("Column names in uploaded files:")
-        st.sidebar.write("Onboarding:", list(onboarding_df.columns))
-        st.sidebar.write("Deposit:", list(deposit_df.columns))
-        st.sidebar.write("Ticket:", list(ticket_df.columns))
-        st.sidebar.write("Scan:", list(scan_df.columns))
+        # Apply date filtering if dates are provided
+        if start_date or end_date:
+            # Find date columns in each dataframe
+            deposit_date_col = find_date_column(deposit_df)
+            ticket_date_col = find_date_column(ticket_df)
+            scan_date_col = find_date_column(scan_df)
+            onboarding_date_col = find_date_column(onboarding_df)
+            
+            # Apply date filters
+            if deposit_date_col:
+                deposit_df = filter_by_date(deposit_df, deposit_date_col, start_date, end_date)
+            
+            if ticket_date_col:
+                ticket_df = filter_by_date(ticket_df, ticket_date_col, start_date, end_date)
+            
+            if scan_date_col:
+                scan_df = filter_by_date(scan_df, scan_date_col, start_date, end_date)
+            
+            if onboarding_date_col:
+                onboarding_df = filter_by_date(onboarding_df, onboarding_date_col, start_date, end_date)
+        
+        # Display column names in sidebar
+        if 'show_columns' in st.session_state and st.session_state.show_columns:
+            with st.sidebar.expander("📋 View Column Names", expanded=False):
+                st.markdown("**Onboarding Data Columns:**")
+                st.markdown(f'<div class="column-display">{list(onboarding_df.columns)}</div>', unsafe_allow_html=True)
+                
+                st.markdown("**Deposit Data Columns:**")
+                st.markdown(f'<div class="column-display">{list(deposit_df.columns)}</div>', unsafe_allow_html=True)
+                
+                st.markdown("**Ticket Data Columns:**")
+                st.markdown(f'<div class="column-display">{list(ticket_df.columns)}</div>', unsafe_allow_html=True)
+                
+                st.markdown("**Scan Data Columns:**")
+                st.markdown(f'<div class="column-display">{list(scan_df.columns)}</div>', unsafe_allow_html=True)
         
         # Clean mobile numbers in onboarding data
         if 'Mobile' in onboarding_df.columns:
@@ -587,7 +731,8 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
             "report_2_results": results_df,
             "customer_names": customer_names,
             "onboarding_map": onboarding_map,
-            "dsa_customers": dsa_customers
+            "dsa_customers": dsa_customers,
+            "filtered_dates": {"start_date": start_date, "end_date": end_date}
         }
         
     except Exception as e:
@@ -706,21 +851,35 @@ def display_filters():
     """Display filtering options in sidebar"""
     st.sidebar.markdown("### 🔍 Filters")
     
+    # Toggle for showing column names
+    st.session_state.show_columns = st.sidebar.checkbox("Show Column Names", value=True)
+    
     # Date range filter
     st.sidebar.markdown("**Date Range Filter**")
     date_option = st.sidebar.selectbox(
         "Select Date Range",
-        ["All Time", "Last 7 Days", "Last 30 Days", "Custom Range"]
+        ["All Time", "Last 7 Days", "Last 30 Days", "Last 90 Days", "Custom Range"]
     )
     
-    if date_option == "Custom Range":
+    # Set default dates based on selection
+    if date_option == "Last 7 Days":
+        start_date = datetime.now() - timedelta(days=7)
+        end_date = datetime.now()
+    elif date_option == "Last 30 Days":
+        start_date = datetime.now() - timedelta(days=30)
+        end_date = datetime.now()
+    elif date_option == "Last 90 Days":
+        start_date = datetime.now() - timedelta(days=90)
+        end_date = datetime.now()
+    elif date_option == "Custom Range":
         col1, col2 = st.sidebar.columns(2)
         with col1:
             start_date = st.date_input("Start Date", datetime.now() - timedelta(days=30))
         with col2:
             end_date = st.date_input("End Date", datetime.now())
-    else:
-        start_date = end_date = None
+    else:  # All Time
+        start_date = None
+        end_date = None
     
     # DSA filter
     st.sidebar.markdown("**DSA Filter**")
@@ -974,16 +1133,51 @@ def main():
         
         with tab1:
             if st.session_state.report_1_data:
+                # Check if we need to reprocess with date filters
+                if filters["apply_filters"]:
+                    with st.spinner("Applying filters to Report 1..."):
+                        # Reprocess Report 1 with date filters
+                        filtered_report_1 = process_report_1(
+                            st.session_state.uploaded_files["onboarding"],
+                            st.session_state.uploaded_files["ticket"],
+                            st.session_state.uploaded_files["conversion"],
+                            st.session_state.uploaded_files["deposit"],
+                            st.session_state.uploaded_files["scan"],
+                            start_date=filters["start_date"],
+                            end_date=filters["end_date"]
+                        )
+                        
+                        if filtered_report_1:
+                            st.session_state.filtered_report_1 = filtered_report_1
+                            data_to_display = filtered_report_1
+                            st.success(f"✓ Report 1 filtered for date range: {filters['start_date']} to {filters['end_date']}")
+                        else:
+                            data_to_display = st.session_state.report_1_data
+                            st.warning("Could not apply date filter, showing all data")
+                else:
+                    data_to_display = st.session_state.report_1_data
+                
                 st.markdown('<div class="sub-header">Report 1: DSA Performance Summary (GMD)</div>', unsafe_allow_html=True)
                 
-                # Display metrics
-                display_metrics(st.session_state.report_1_data, "report_1")
+                # Display date filter info if applied
+                if filters["apply_filters"] and "filtered_dates" in data_to_display:
+                    dates = data_to_display["filtered_dates"]
+                    if dates["start_date"] or dates["end_date"]:
+                        date_range = ""
+                        if dates["start_date"]:
+                            date_range += f"From: {dates['start_date'].strftime('%Y-%m-%d')} "
+                        if dates["end_date"]:
+                            date_range += f"To: {dates['end_date'].strftime('%Y-%m-%d')}"
+                        st.info(f"📅 **Date Filter Applied:** {date_range}")
                 
-                # Filter data if needed
+                # Display metrics
+                display_metrics(data_to_display, "report_1")
+                
+                # Apply other filters (DSA, min customers, min payment)
                 if filters["apply_filters"]:
-                    filtered_data = filter_data(st.session_state.report_1_data, filters, "report_1")
+                    filtered_data = filter_data(data_to_display, filters, "report_1")
                 else:
-                    filtered_data = st.session_state.report_1_data.get("dsa_summary", pd.DataFrame())
+                    filtered_data = data_to_display.get("dsa_summary", pd.DataFrame())
                 
                 # Display data
                 if not filtered_data.empty:
@@ -992,7 +1186,7 @@ def main():
                     
                     # Show qualified customers
                     with st.expander("View Qualified Customers Details"):
-                        qualified_df = st.session_state.report_1_data.get("qualified_customers", pd.DataFrame())
+                        qualified_df = data_to_display.get("qualified_customers", pd.DataFrame())
                         if not qualified_df.empty:
                             st.dataframe(qualified_df, use_container_width=True)
                         else:
@@ -1002,16 +1196,50 @@ def main():
         
         with tab2:
             if st.session_state.report_2_data and "report_2_results" in st.session_state.report_2_data and not st.session_state.report_2_data["report_2_results"].empty:
+                # Check if we need to reprocess with date filters
+                if filters["apply_filters"]:
+                    with st.spinner("Applying filters to Report 2..."):
+                        # Reprocess Report 2 with date filters
+                        filtered_report_2 = process_report_2(
+                            st.session_state.uploaded_files["onboarding"],
+                            st.session_state.uploaded_files["deposit"],
+                            st.session_state.uploaded_files["ticket"],
+                            st.session_state.uploaded_files["scan"],
+                            start_date=filters["start_date"],
+                            end_date=filters["end_date"]
+                        )
+                        
+                        if filtered_report_2:
+                            st.session_state.filtered_report_2 = filtered_report_2
+                            data_to_display = filtered_report_2
+                            st.success(f"✓ Report 2 filtered for date range: {filters['start_date']} to {filters['end_date']}")
+                        else:
+                            data_to_display = st.session_state.report_2_data
+                            st.warning("Could not apply date filter, showing all data")
+                else:
+                    data_to_display = st.session_state.report_2_data
+                
                 st.markdown('<div class="sub-header">Report 2: Detailed DSA Analysis (GMD)</div>', unsafe_allow_html=True)
                 
-                # Display metrics
-                display_metrics(st.session_state.report_2_data, "report_2")
+                # Display date filter info if applied
+                if filters["apply_filters"] and "filtered_dates" in data_to_display:
+                    dates = data_to_display["filtered_dates"]
+                    if dates["start_date"] or dates["end_date"]:
+                        date_range = ""
+                        if dates["start_date"]:
+                            date_range += f"From: {dates['start_date'].strftime('%Y-%m-%d')} "
+                        if dates["end_date"]:
+                            date_range += f"To: {dates['end_date'].strftime('%Y-%m-%d')}"
+                        st.info(f"📅 **Date Filter Applied:** {date_range}")
                 
-                # Filter data if needed
+                # Display metrics
+                display_metrics(data_to_display, "report_2")
+                
+                # Apply other filters (DSA, min customers, min payment)
                 if filters["apply_filters"]:
-                    filtered_data = filter_data(st.session_state.report_2_data, filters, "report_2")
+                    filtered_data = filter_data(data_to_display, filters, "report_2")
                 else:
-                    filtered_data = st.session_state.report_2_data["report_2_results"]
+                    filtered_data = data_to_display["report_2_results"]
                 
                 # Display data
                 if not filtered_data.empty:
@@ -1053,7 +1281,9 @@ def main():
             
             # Create visualizations
             if st.session_state.report_1_data:
-                fig1_r1, fig2_r1 = create_visualizations(st.session_state.report_1_data, "report_1")
+                # Use filtered data if available
+                data_for_viz_1 = st.session_state.filtered_report_1 if st.session_state.filtered_report_1 else st.session_state.report_1_data
+                fig1_r1, fig2_r1 = create_visualizations(data_for_viz_1, "report_1")
                 
                 if fig1_r1:
                     st.plotly_chart(fig1_r1, use_container_width=True)
@@ -1063,7 +1293,9 @@ def main():
                     st.info("No visualization data available for Report 1.")
             
             if st.session_state.report_2_data and "report_2_results" in st.session_state.report_2_data and not st.session_state.report_2_data["report_2_results"].empty:
-                fig1_r2, fig2_r2 = create_visualizations(st.session_state.report_2_data, "report_2")
+                # Use filtered data if available
+                data_for_viz_2 = st.session_state.filtered_report_2 if st.session_state.filtered_report_2 else st.session_state.report_2_data
+                fig1_r2, fig2_r2 = create_visualizations(data_for_viz_2, "report_2")
                 
                 if fig1_r2:
                     st.plotly_chart(fig1_r2, use_container_width=True)
@@ -1080,7 +1312,9 @@ def main():
             with col1:
                 if st.session_state.report_1_data:
                     st.markdown("#### Report 1: DSA Performance")
-                    excel_file_1 = create_excel_download(st.session_state.report_1_data, "report_1")
+                    # Use filtered data for download if available
+                    data_for_download_1 = st.session_state.filtered_report_1 if st.session_state.filtered_report_1 else st.session_state.report_1_data
+                    excel_file_1 = create_excel_download(data_for_download_1, "report_1")
                     
                     if excel_file_1:
                         st.download_button(
@@ -1091,8 +1325,8 @@ def main():
                         )
                     
                     # CSV download
-                    if "dsa_summary" in st.session_state.report_1_data and not st.session_state.report_1_data["dsa_summary"].empty:
-                        csv_1 = st.session_state.report_1_data["dsa_summary"].to_csv(index=False).encode('utf-8')
+                    if "dsa_summary" in data_for_download_1 and not data_for_download_1["dsa_summary"].empty:
+                        csv_1 = data_for_download_1["dsa_summary"].to_csv(index=False).encode('utf-8')
                         st.download_button(
                             label="📥 Download Summary (CSV)",
                             data=csv_1,
@@ -1103,7 +1337,9 @@ def main():
             with col2:
                 if st.session_state.report_2_data and "report_2_results" in st.session_state.report_2_data and not st.session_state.report_2_data["report_2_results"].empty:
                     st.markdown("#### Report 2: Detailed Analysis")
-                    excel_file_2 = create_excel_download(st.session_state.report_2_data, "report_2")
+                    # Use filtered data for download if available
+                    data_for_download_2 = st.session_state.filtered_report_2 if st.session_state.filtered_report_2 else st.session_state.report_2_data
+                    excel_file_2 = create_excel_download(data_for_download_2, "report_2")
                     
                     if excel_file_2:
                         st.download_button(
@@ -1114,7 +1350,7 @@ def main():
                         )
                     
                     # CSV download
-                    csv_2 = st.session_state.report_2_data["report_2_results"].to_csv(index=False, sep='\t').encode('utf-8')
+                    csv_2 = data_for_download_2["report_2_results"].to_csv(index=False, sep='\t').encode('utf-8')
                     st.download_button(
                         label="📥 Download Analysis (CSV)",
                         data=csv_2,
@@ -1162,6 +1398,7 @@ def main():
                 st.write("- Amount (GMD)")
                 st.write("- Created By")
                 st.write("- Full Name")
+                st.write("- Created At (for date filtering)")
             
             with col2:
                 st.markdown("**Onboarding Data Columns:**")
@@ -1169,6 +1406,7 @@ def main():
                 st.write("- Customer Referrer Mobile")
                 st.write("- Full Name")
                 st.write("- Status")
+                st.write("- Registration Date (for date filtering)")
 
 if __name__ == "__main__":
     main()
