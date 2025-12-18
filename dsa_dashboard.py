@@ -311,175 +311,175 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         return None
 
 def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
-    """Process data for Report 2"""
+    """Process data for Report 2 - COMPLETE VERSION matching original requirements"""
     try:
         # Clean column names
         for df in [onboarding_df, deposit_df, ticket_df, scan_df]:
             df.columns = [str(col).strip() for col in df.columns]
         
-        # Clean mobile numbers in all dataframes
-        # Onboarding data
-        if 'Mobile' in onboarding_df.columns:
-            onboarding_df['Mobile'] = onboarding_df['Mobile'].apply(clean_mobile_number)
-        if 'Customer Referrer Mobile' in onboarding_df.columns:
-            onboarding_df['Customer Referrer Mobile'] = onboarding_df['Customer Referrer Mobile'].apply(clean_mobile_number)
-        
-        # Deposit data
-        if 'User Identifier' in deposit_df.columns:
-            deposit_df['User Identifier'] = deposit_df['User Identifier'].apply(clean_mobile_number)
-        if 'Created By' in deposit_df.columns:
-            deposit_df['Created By'] = deposit_df['Created By'].apply(clean_mobile_number)
-        
-        # Ticket data
-        if 'User Identifier' in ticket_df.columns:
-            ticket_df['User Identifier'] = ticket_df['User Identifier'].apply(clean_mobile_number)
-        if 'Created By' in ticket_df.columns:
-            ticket_df['Created By'] = ticket_df['Created By'].apply(clean_mobile_number)
-        
-        # Scan data
-        if 'User Identifier' in scan_df.columns:
-            scan_df['User Identifier'] = scan_df['User Identifier'].apply(clean_mobile_number)
-        if 'Created By' in scan_df.columns:
-            scan_df['Created By'] = scan_df['Created By'].apply(clean_mobile_number)
+        print(f"Processing Report 2 with: Onboarding={onboarding_df.shape}, Deposit={deposit_df.shape}, Ticket={ticket_df.shape}, Scan={scan_df.shape}")
         
         # Get customer names from all sources
         customer_names = {}
         onboarding_map = {}
         
         # Get names from onboarding data
-        if 'Mobile' in onboarding_df.columns and 'Full Name' in onboarding_df.columns:
+        if 'Mobile' in onboarding_df.columns:
+            onboarding_df['Mobile'] = onboarding_df['Mobile'].apply(clean_mobile_number)
+        if 'Customer Referrer Mobile' in onboarding_df.columns:
+            onboarding_df['Customer Referrer Mobile'] = onboarding_df['Customer Referrer Mobile'].apply(clean_mobile_number)
+        
+        # Map from onboarding data
+        if 'Mobile' in onboarding_df.columns and 'Customer Referrer Mobile' in onboarding_df.columns and 'Full Name' in onboarding_df.columns:
             for _, row in onboarding_df.dropna(subset=['Mobile']).iterrows():
                 mobile = row['Mobile']
                 name = row.get('Full Name')
-                if mobile and name and pd.notna(name):
-                    customer_names[mobile] = str(name).strip()
-                
-                # Get onboarding mapping
-                referrer = row.get('Customer Referrer Mobile')
-                if mobile and referrer and pd.notna(referrer):
-                    onboarding_map[mobile] = referrer
+                if mobile and pd.notna(mobile):
+                    if name and pd.notna(name):
+                        customer_names[str(mobile)] = str(name).strip()
+                    
+                    # Get onboarding mapping
+                    referrer = row.get('Customer Referrer Mobile')
+                    if referrer and pd.notna(referrer):
+                        onboarding_map[str(mobile)] = str(referrer)
         
-        # Get names from deposit data
-        if 'User Identifier' in deposit_df.columns and 'Full Name' in deposit_df.columns:
-            for _, row in deposit_df.dropna(subset=['User Identifier']).iterrows():
-                mobile = row['User Identifier']
-                name = row.get('Full Name')
-                if mobile and name and pd.notna(name) and mobile not in customer_names:
-                    customer_names[mobile] = str(name).strip()
-        
-        # Get names from ticket data
-        if 'User Identifier' in ticket_df.columns and 'Full Name' in ticket_df.columns:
-            for _, row in ticket_df.dropna(subset=['User Identifier']).iterrows():
-                mobile = row['User Identifier']
-                name = row.get('Full Name')
-                if mobile and name and pd.notna(name) and mobile not in customer_names:
-                    customer_names[mobile] = str(name).strip()
-        
-        # Get names from scan data
-        if 'User Identifier' in scan_df.columns and 'Full Name' in scan_df.columns:
-            for _, row in scan_df.dropna(subset=['User Identifier']).iterrows():
-                mobile = row['User Identifier']
-                name = row.get('Full Name')
-                if mobile and name and pd.notna(name) and mobile not in customer_names:
-                    customer_names[mobile] = str(name).strip()
-        
-        # Analyze transactions
+        # DEPOSIT ANALYSIS - Most important part
         dsa_customers = {}
         
-        # Filter deposits for customer deposits (CR)
-        if 'Transaction Type' in deposit_df.columns:
-            customer_deposits = deposit_df[deposit_df['Transaction Type'] == 'CR'].copy()
-        else:
-            customer_deposits = deposit_df.copy()
+        # Process deposit data to find DSA-customer relationships
+        if 'User Identifier' in deposit_df.columns and 'Created By' in deposit_df.columns:
+            deposit_df['User Identifier'] = deposit_df['User Identifier'].apply(clean_mobile_number)
+            deposit_df['Created By'] = deposit_df['Created By'].apply(clean_mobile_number)
+            
+            # Filter for customer deposits (CR transactions)
+            customer_deposits = deposit_df[deposit_df['Transaction Type'] == 'CR'].copy() if 'Transaction Type' in deposit_df.columns else deposit_df.copy()
+            
+            print(f"Found {len(customer_deposits)} customer deposits")
+            
+            for _, row in customer_deposits.iterrows():
+                customer_mobile = str(row.get('User Identifier')) if pd.notna(row.get('User Identifier')) else None
+                dsa_mobile = str(row.get('Created By')) if pd.notna(row.get('Created By')) else None
+                
+                if not customer_mobile or not dsa_mobile or customer_mobile == dsa_mobile:
+                    continue
+                
+                # Initialize DSA entry
+                if dsa_mobile not in dsa_customers:
+                    dsa_customers[dsa_mobile] = {}
+                
+                # Initialize customer entry
+                if customer_mobile not in dsa_customers[dsa_mobile]:
+                    dsa_customers[dsa_mobile][customer_mobile] = {
+                        'full_name': customer_names.get(customer_mobile, 'Unknown'),
+                        'deposit_count': 0,
+                        'bought_ticket': 0,
+                        'did_scan': 0,
+                        'onboarded_by': onboarding_map.get(customer_mobile, 'NOT ONBOARDED'),
+                        'match_status': 'NO ONBOARDING' if customer_mobile not in onboarding_map else 'MISMATCH'
+                    }
+                
+                # Update deposit count
+                dsa_customers[dsa_mobile][customer_mobile]['deposit_count'] += 1
         
-        for _, row in customer_deposits.iterrows():
-            customer_mobile = row.get('User Identifier')
-            dsa_mobile = row.get('Created By')
+        # TICKET ANALYSIS
+        if 'User Identifier' in ticket_df.columns:
+            ticket_df['User Identifier'] = ticket_df['User Identifier'].apply(clean_mobile_number)
             
-            if not customer_mobile or not dsa_mobile or customer_mobile == dsa_mobile:
-                continue
+            # Filter for ticket purchases (DR transactions)
+            ticket_purchases = ticket_df[ticket_df['Transaction Type'] == 'DR'].copy() if 'Transaction Type' in ticket_df.columns else ticket_df.copy()
             
-            if dsa_mobile not in dsa_customers:
-                dsa_customers[dsa_mobile] = {}
+            print(f"Found {len(ticket_purchases)} ticket purchases")
             
-            if customer_mobile not in dsa_customers[dsa_mobile]:
-                dsa_customers[dsa_mobile][customer_mobile] = {
-                    'full_name': customer_names.get(customer_mobile, 'Unknown'),
-                    'deposit_count': 0,
-                    'bought_ticket': 0,
-                    'did_scan': 0,
-                    'onboarded_by': onboarding_map.get(customer_mobile, 'NOT ONBOARDED'),
-                    'match_status': 'NO ONBOARDING' if customer_mobile not in onboarding_map else 'MISMATCH'
-                }
+            # Get names from ticket data if available
+            if 'Full Name' in ticket_df.columns:
+                for _, row in ticket_df.dropna(subset=['User Identifier']).iterrows():
+                    mobile = str(row['User Identifier'])
+                    name = row.get('Full Name')
+                    if mobile and name and pd.notna(name) and mobile not in customer_names:
+                        customer_names[mobile] = str(name).strip()
             
-            dsa_customers[dsa_mobile][customer_mobile]['deposit_count'] += 1
-        
-        # Analyze ticket purchases
-        if 'Transaction Type' in ticket_df.columns:
-            customer_tickets = ticket_df[ticket_df['Transaction Type'] == 'DR'].copy()
-        else:
-            customer_tickets = ticket_df.copy()
-        
-        for _, row in customer_tickets.iterrows():
-            customer_mobile = row.get('User Identifier')
-            if not customer_mobile:
-                continue
+            # Count tickets for each customer
+            customer_ticket_counts = {}
+            for _, row in ticket_purchases.iterrows():
+                customer_mobile = str(row.get('User Identifier'))
+                if customer_mobile:
+                    customer_ticket_counts[customer_mobile] = customer_ticket_counts.get(customer_mobile, 0) + 1
             
+            # Assign ticket counts to DSA customers
             for dsa_mobile, customers in dsa_customers.items():
-                if customer_mobile in customers:
-                    customers[customer_mobile]['bought_ticket'] += 1
-                    break
+                for customer_mobile in customers:
+                    if customer_mobile in customer_ticket_counts:
+                        dsa_customers[dsa_mobile][customer_mobile]['bought_ticket'] = customer_ticket_counts[customer_mobile]
         
-        # Analyze scan transactions
-        if 'Transaction Type' in scan_df.columns:
-            customer_scans = scan_df[scan_df['Transaction Type'] == 'DR'].copy()
-        else:
-            customer_scans = scan_df.copy()
-        
-        for _, row in customer_scans.iterrows():
-            customer_mobile = row.get('User Identifier')
-            if not customer_mobile:
-                continue
+        # SCAN ANALYSIS
+        if 'User Identifier' in scan_df.columns:
+            scan_df['User Identifier'] = scan_df['User Identifier'].apply(clean_mobile_number)
             
+            # Filter for scan transactions (DR transactions)
+            scan_transactions = scan_df[scan_df['Transaction Type'] == 'DR'].copy() if 'Transaction Type' in scan_df.columns else scan_df.copy()
+            
+            print(f"Found {len(scan_transactions)} scan transactions")
+            
+            # Get names from scan data if available
+            if 'Full Name' in scan_df.columns:
+                for _, row in scan_df.dropna(subset=['User Identifier']).iterrows():
+                    mobile = str(row['User Identifier'])
+                    name = row.get('Full Name')
+                    if mobile and name and pd.notna(name) and mobile not in customer_names:
+                        customer_names[mobile] = str(name).strip()
+            
+            # Count scans for each customer
+            customer_scan_counts = {}
+            for _, row in scan_transactions.iterrows():
+                customer_mobile = str(row.get('User Identifier'))
+                if customer_mobile:
+                    customer_scan_counts[customer_mobile] = customer_scan_counts.get(customer_mobile, 0) + 1
+            
+            # Assign scan counts to DSA customers
             for dsa_mobile, customers in dsa_customers.items():
-                if customer_mobile in customers:
-                    customers[customer_mobile]['did_scan'] += 1
-                    break
+                for customer_mobile in customers:
+                    if customer_mobile in customer_scan_counts:
+                        dsa_customers[dsa_mobile][customer_mobile]['did_scan'] = customer_scan_counts[customer_mobile]
         
-        # Update match status
+        # Update match status for onboarded customers
         for dsa_mobile, customers in dsa_customers.items():
             for customer_mobile, customer_data in customers.items():
                 onboarded_by = customer_data['onboarded_by']
                 if onboarded_by != 'NOT ONBOARDED':
-                    customer_data['match_status'] = 'MATCH' if onboarded_by == dsa_mobile else 'MISMATCH'
+                    customer_data['match_status'] = 'MATCH' if str(onboarded_by) == str(dsa_mobile) else 'MISMATCH'
         
-        # Create formatted output
+        print(f"Found {len(dsa_customers)} DSAs with customers")
+        
+        # CREATE FORMATTED OUTPUT (EXACT FORMAT AS ORIGINAL)
         all_rows = []
         
         for dsa_mobile, customers in dsa_customers.items():
-            # Calculate summary for this DSA
+            # Get active customers (those with ticket or scan activity)
             active_customers = []
             for customer_mobile, customer_data in customers.items():
                 if customer_data['bought_ticket'] > 0 or customer_data['did_scan'] > 0:
-                    active_customers.append(customer_mobile)
+                    active_customers.append((customer_mobile, customer_data))
             
             if not active_customers:
                 continue
             
+            # Calculate totals for this DSA
             customer_count = len(active_customers)
-            deposit_count = sum(customers[c]['deposit_count'] for c in active_customers)
-            ticket_count = sum(customers[c]['bought_ticket'] for c in active_customers)
-            scan_count = sum(customers[c]['did_scan'] for c in active_customers)
-            payment = customer_count * 25
+            deposit_count = sum(data['deposit_count'] for _, data in active_customers)
+            ticket_count = sum(data['bought_ticket'] for _, data in active_customers)
+            scan_count = sum(data['did_scan'] for _, data in active_customers)
+            payment = customer_count * 25  # $25 per active customer as in original
             
-            # Add summary row
-            first_customer = active_customers[0] if active_customers else None
-            if first_customer:
-                first_customer_data = customers[first_customer]
+            # Sort active customers by name for consistent output
+            active_customers.sort(key=lambda x: x[1]['full_name'])
+            
+            # Add summary row (first customer row with summary columns filled)
+            if active_customers:
+                first_customer_mobile, first_customer_data = active_customers[0]
                 
                 summary_row = {
                     'dsa_mobile': dsa_mobile,
-                    'customer_mobile': first_customer,
+                    'customer_mobile': first_customer_mobile,
                     'full_name': first_customer_data['full_name'],
                     'bought_ticket': first_customer_data['bought_ticket'],
                     'did_scan': first_customer_data['did_scan'],
@@ -494,10 +494,8 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
                 }
                 all_rows.append(summary_row)
             
-            # Add remaining customer rows
-            for customer_mobile in active_customers[1:]:
-                customer_data = customers[customer_mobile]
-                
+            # Add remaining customer rows (with empty summary columns)
+            for customer_mobile, customer_data in active_customers[1:]:
                 customer_row = {
                     'dsa_mobile': dsa_mobile,
                     'customer_mobile': customer_mobile,
@@ -514,11 +512,28 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
                     'Payment': ''
                 }
                 all_rows.append(customer_row)
+            
+            # Add empty separator row after each DSA (optional, like original format)
+            all_rows.append({
+                'dsa_mobile': '',
+                'customer_mobile': '',
+                'full_name': '',
+                'bought_ticket': '',
+                'did_scan': '',
+                'deposited': '',
+                'onboarded_by': '',
+                'match_status': '',
+                'Customer Count': '',
+                'Deposit Count': '',
+                'Ticket Count': '',
+                'Scan To Send Count': '',
+                'Payment': ''
+            })
         
         # Create DataFrame
         results_df = pd.DataFrame(all_rows)
         
-        # Define column order
+        # Define column order exactly as original
         columns = [
             'dsa_mobile', 'customer_mobile', 'full_name', 'bought_ticket', 
             'did_scan', 'deposited', 'onboarded_by', 'match_status',
@@ -526,10 +541,14 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
             'Scan To Send Count', 'Payment'
         ]
         
-        if not results_df.empty:
-            results_df = results_df[columns]
-        else:
-            results_df = pd.DataFrame(columns=columns)
+        # Ensure all columns exist
+        for col in columns:
+            if col not in results_df.columns:
+                results_df[col] = ''
+        
+        results_df = results_df[columns]
+        
+        print(f"Created Report 2 with {len(results_df)} rows")
         
         return {
             "report_2_results": results_df,
@@ -540,34 +559,8 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
         
     except Exception as e:
         st.error(f"Error processing Report 2: {str(e)}")
-        return None
-
-def create_excel_download(data, report_type):
-    """Create Excel file for download"""
-    try:
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            if report_type == "report_1":
-                if "qualified_customers" in data and not data["qualified_customers"].empty:
-                    data["qualified_customers"].to_excel(writer, index=False, sheet_name="Qualified_Customers")
-                if "dsa_summary" in data and not data["dsa_summary"].empty:
-                    data["dsa_summary"].to_excel(writer, index=False, sheet_name="DSA_Summary")
-                if "onboarded_customers" in data and not data["onboarded_customers"].empty:
-                    data["onboarded_customers"].to_excel(writer, index=False, sheet_name="All_Customers")
-                if "ticket_details" in data and not data["ticket_details"].empty:
-                    data["ticket_details"].to_excel(writer, index=False, sheet_name="Ticket_Details")
-                if "scan_details" in data and not data["scan_details"].empty:
-                    data["scan_details"].to_excel(writer, index=False, sheet_name="Scan_Details")
-                if "deposit_details" in data and not data["deposit_details"].empty:
-                    data["deposit_details"].to_excel(writer, index=False, sheet_name="Deposit_Details")
-            else:
-                if "report_2_results" in data and not data["report_2_results"].empty:
-                    data["report_2_results"].to_excel(writer, index=False, sheet_name="DSA_Analysis")
-        
-        output.seek(0)
-        return output
-    except Exception as e:
-        st.error(f"Error creating Excel file: {str(e)}")
+        import traceback
+        st.error(f"Traceback: {traceback.format_exc()}")
         return None
 
 def display_metrics(data, report_type):
@@ -575,35 +568,48 @@ def display_metrics(data, report_type):
     col1, col2, col3, col4 = st.columns(4)
     
     if report_type == "report_1":
-        if "dsa_summary" in data and not data["dsa_summary"].empty:
-            with col1:
-                total_dsas = data["dsa_summary"]["dsa_mobile"].nunique()
-                st.metric("Total DSAs", f"{total_dsas:,}")
+        # ... (keep existing Report 1 code) ...
+    
+    else:
+        # REPORT 2 METRICS
+        if "report_2_results" in data and not data["report_2_results"].empty:
+            # Get summary rows (rows with Customer Count filled)
+            summary_rows = data["report_2_results"][
+                (data["report_2_results"]['Customer Count'] != '') & 
+                (data["report_2_results"]['Customer Count'] != 0)
+            ].copy()
             
-            with col2:
-                if "onboarded_customers" in data:
-                    total_customers = len(data["onboarded_customers"])
-                    st.metric("Total Onboarded Customers", f"{total_customers:,}")
-                else:
-                    st.metric("Total Onboarded Customers", "0")
-            
-            with col3:
-                if "qualified_customers" in data:
-                    qualified_count = len(data["qualified_customers"])
-                    st.metric("Qualified Customers", f"{qualified_count:,}")
-                else:
-                    st.metric("Qualified Customers", "0")
-            
-            with col4:
-                if "qualified_customers" in data and not data["qualified_customers"].empty:
-                    total_payment = (data["qualified_customers"]["Payment (Customer Count *40)"].sum() if "Payment (Customer Count *40)" in data["qualified_customers"].columns else 0)
+            # Clean numeric columns
+            if not summary_rows.empty:
+                summary_rows['Customer Count'] = pd.to_numeric(summary_rows['Customer Count'], errors='coerce').fillna(0)
+                summary_rows['Ticket Count'] = pd.to_numeric(summary_rows['Ticket Count'], errors='coerce').fillna(0)
+                summary_rows['Scan To Send Count'] = pd.to_numeric(summary_rows['Scan To Send Count'], errors='coerce').fillna(0)
+                summary_rows['Payment'] = pd.to_numeric(summary_rows['Payment'], errors='coerce').fillna(0)
+                
+                with col1:
+                    total_dsas = summary_rows['dsa_mobile'].nunique()
+                    st.metric("Total DSAs", f"{int(total_dsas):,}")
+                
+                with col2:
+                    total_customers = int(summary_rows['Customer Count'].sum())
+                    st.metric("Active Customers", f"{total_customers:,}")
+                
+                with col3:
+                    total_tickets = int(summary_rows['Ticket Count'].sum())
+                    st.metric("Total Tickets", f"{total_tickets:,}")
+                
+                with col4:
+                    total_payment = float(summary_rows['Payment'].sum())
                     st.metric("Total Payment (GMD)", f"GMD {total_payment:,.2f}")
-                else:
-                    st.metric("Total Payment (GMD)", "GMD 0.00")
+            else:
+                col1.metric("Total DSAs", "0")
+                col2.metric("Active Customers", "0")
+                col3.metric("Total Tickets", "0")
+                col4.metric("Total Payment (GMD)", "GMD 0.00")
         else:
             col1.metric("Total DSAs", "0")
-            col2.metric("Total Onboarded Customers", "0")
-            col3.metric("Qualified Customers", "0")
+            col2.metric("Active Customers", "0")
+            col3.metric("Total Tickets", "0")
             col4.metric("Total Payment (GMD)", "GMD 0.00")
     
     else:
