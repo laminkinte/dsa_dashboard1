@@ -568,7 +568,36 @@ def display_metrics(data, report_type):
     col1, col2, col3, col4 = st.columns(4)
     
     if report_type == "report_1":
-        # ... (keep existing Report 1 code) ...
+        if "dsa_summary" in data and not data["dsa_summary"].empty:
+            with col1:
+                total_dsas = data["dsa_summary"]["dsa_mobile"].nunique()
+                st.metric("Total DSAs", f"{total_dsas:,}")
+            
+            with col2:
+                if "onboarded_customers" in data:
+                    total_customers = len(data["onboarded_customers"])
+                    st.metric("Total Onboarded Customers", f"{total_customers:,}")
+                else:
+                    st.metric("Total Onboarded Customers", "0")
+            
+            with col3:
+                if "qualified_customers" in data:
+                    qualified_count = len(data["qualified_customers"])
+                    st.metric("Qualified Customers", f"{qualified_count:,}")
+                else:
+                    st.metric("Qualified Customers", "0")
+            
+            with col4:
+                if "qualified_customers" in data and not data["qualified_customers"].empty:
+                    total_payment = (data["qualified_customers"]["Payment (Customer Count *40)"].sum() if "Payment (Customer Count *40)" in data["qualified_customers"].columns else 0)
+                    st.metric("Total Payment (GMD)", f"GMD {total_payment:,.2f}")
+                else:
+                    st.metric("Total Payment (GMD)", "GMD 0.00")
+        else:
+            col1.metric("Total DSAs", "0")
+            col2.metric("Total Onboarded Customers", "0")
+            col3.metric("Qualified Customers", "0")
+            col4.metric("Total Payment (GMD)", "GMD 0.00")
     
     else:
         # REPORT 2 METRICS
@@ -606,6 +635,11 @@ def display_metrics(data, report_type):
                 col2.metric("Active Customers", "0")
                 col3.metric("Total Tickets", "0")
                 col4.metric("Total Payment (GMD)", "GMD 0.00")
+        else:
+            col1.metric("Total DSAs", "0")
+            col2.metric("Active Customers", "0")
+            col3.metric("Total Tickets", "0")
+            col4.metric("Total Payment (GMD)", "GMD 0.00")
         else:
             col1.metric("Total DSAs", "0")
             col2.metric("Active Customers", "0")
