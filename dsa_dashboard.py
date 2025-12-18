@@ -103,11 +103,10 @@ def clean_currency_amount(amount):
         return 0
 
 def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_df):
-    """Process data for Report 1 - FIXED VERSION"""
+    """Process data for Report 1"""
     try:
-        # FIXED: Clean column names safely
+        # Clean column names
         for df in [onboarding_df, ticket_df, conversion_df, deposit_df, scan_df]:
-            # Convert column names to strings first
             df.columns = [str(col).strip() for col in df.columns]
         
         # Fix ticket data if needed
@@ -563,6 +562,34 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
         st.error(f"Traceback: {traceback.format_exc()}")
         return None
 
+def create_excel_download(data, report_type):
+    """Create Excel file for download"""
+    try:
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            if report_type == "report_1":
+                if "qualified_customers" in data and not data["qualified_customers"].empty:
+                    data["qualified_customers"].to_excel(writer, index=False, sheet_name="Qualified_Customers")
+                if "dsa_summary" in data and not data["dsa_summary"].empty:
+                    data["dsa_summary"].to_excel(writer, index=False, sheet_name="DSA_Summary")
+                if "onboarded_customers" in data and not data["onboarded_customers"].empty:
+                    data["onboarded_customers"].to_excel(writer, index=False, sheet_name="All_Customers")
+                if "ticket_details" in data and not data["ticket_details"].empty:
+                    data["ticket_details"].to_excel(writer, index=False, sheet_name="Ticket_Details")
+                if "scan_details" in data and not data["scan_details"].empty:
+                    data["scan_details"].to_excel(writer, index=False, sheet_name="Scan_Details")
+                if "deposit_details" in data and not data["deposit_details"].empty:
+                    data["deposit_details"].to_excel(writer, index=False, sheet_name="Deposit_Details")
+            else:
+                if "report_2_results" in data and not data["report_2_results"].empty:
+                    data["report_2_results"].to_excel(writer, index=False, sheet_name="DSA_Analysis")
+        
+        output.seek(0)
+        return output
+    except Exception as e:
+        st.error(f"Error creating Excel file: {str(e)}")
+        return None
+
 def display_metrics(data, report_type):
     """Display key metrics"""
     col1, col2, col3, col4 = st.columns(4)
@@ -635,40 +662,6 @@ def display_metrics(data, report_type):
                 col2.metric("Active Customers", "0")
                 col3.metric("Total Tickets", "0")
                 col4.metric("Total Payment (GMD)", "GMD 0.00")
-        else:
-            col1.metric("Total DSAs", "0")
-            col2.metric("Active Customers", "0")
-            col3.metric("Total Tickets", "0")
-            col4.metric("Total Payment (GMD)", "GMD 0.00")
-        else:
-            col1.metric("Total DSAs", "0")
-            col2.metric("Active Customers", "0")
-            col3.metric("Total Tickets", "0")
-            col4.metric("Total Payment (GMD)", "GMD 0.00")
-    
-    else:
-        if "report_2_results" in data and not data["report_2_results"].empty:
-            # Clean numeric columns
-            if 'Payment' in data["report_2_results"].columns:
-                data["report_2_results"]['Payment'] = pd.to_numeric(data["report_2_results"]['Payment'].replace('', '0'), errors='coerce').fillna(0)
-            
-            summary_rows = data["report_2_results"][data["report_2_results"]['Customer Count'] != '']
-            
-            with col1:
-                total_dsas = summary_rows['dsa_mobile'].nunique() if not summary_rows.empty else 0
-                st.metric("Total DSAs", f"{total_dsas:,}")
-            
-            with col2:
-                total_customers = summary_rows['Customer Count'].sum() if not summary_rows.empty else 0
-                st.metric("Active Customers", f"{total_customers:,}")
-            
-            with col3:
-                total_tickets = summary_rows['Ticket Count'].sum() if not summary_rows.empty else 0
-                st.metric("Total Tickets", f"{total_tickets:,}")
-            
-            with col4:
-                total_payment = summary_rows['Payment'].sum() if not summary_rows.empty else 0
-                st.metric("Total Payment (GMD)", f"GMD {total_payment:,.2f}")
         else:
             col1.metric("Total DSAs", "0")
             col2.metric("Active Customers", "0")
