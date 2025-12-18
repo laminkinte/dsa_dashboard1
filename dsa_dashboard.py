@@ -203,7 +203,7 @@ def find_date_column(df):
     return None
 
 def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_df, start_date=None, end_date=None):
-    """Process data for Report 1 with date filtering"""
+    """Process data for Report 1 with date filtering - EXACT FORMAT as sample"""
     try:
         # Clean column names
         for df in [onboarding_df, ticket_df, conversion_df, deposit_df, scan_df]:
@@ -368,20 +368,87 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         onboarded_customers["ticket_amount"] = onboarded_customers["ticket_amount"].fillna(0)
         onboarded_customers["scan_amount"] = onboarded_customers["scan_amount"].fillna(0)
         
-        # Create qualified customers table
+        # Create qualified customers table - EXACTLY as in sample
         qualified_customers = onboarded_customers[
             (onboarded_customers["deposited"] == 1) & 
             ((onboarded_customers["bought_ticket"] == 1) | (onboarded_customers["did_scan"] == 1))
         ].copy()
         
-        # Sort and add running counts
+        # Sort and add running counts - EXACT FORMAT as sample
         if not qualified_customers.empty:
             qualified_customers = qualified_customers.sort_values(["dsa_mobile", "customer_mobile"])
-            qualified_customers["Customer Count"] = qualified_customers.groupby("dsa_mobile").cumcount() + 1
-            qualified_customers["Deposit Count"] = qualified_customers.groupby("dsa_mobile")["deposited"].cumsum()
-            qualified_customers["Ticket Count"] = qualified_customers.groupby("dsa_mobile")["bought_ticket"].cumsum()
-            qualified_customers["Scan To Send Count"] = qualified_customers.groupby("dsa_mobile")["did_scan"].cumsum()
-            qualified_customers["Payment (Customer Count *40)"] = qualified_customers.groupby("dsa_mobile")["Customer Count"].transform(lambda x: x.max() * 40)
+            
+            # Create a clean table with the exact format from sample
+            result_rows = []
+            
+            for dsa_mobile in qualified_customers["dsa_mobile"].unique():
+                dsa_customers = qualified_customers[qualified_customers["dsa_mobile"] == dsa_mobile].copy()
+                dsa_customers = dsa_customers.sort_values("customer_mobile")
+                
+                # Add summary columns only for first customer of each DSA
+                customer_count = len(dsa_customers)
+                deposit_count = dsa_customers["deposited"].sum()
+                ticket_count = dsa_customers["bought_ticket"].sum()
+                scan_count = dsa_customers["did_scan"].sum()
+                payment = customer_count * 40  # GMD 40 per customer
+                
+                # First customer row with summary
+                first_customer = dsa_customers.iloc[0].copy()
+                first_row = {
+                    'dsa_mobile': dsa_mobile,
+                    'customer_mobile': first_customer['customer_mobile'],
+                    'full_name': first_customer['full_name'],
+                    'bought_ticket': first_customer['bought_ticket'],
+                    'ticket_amount': first_customer['ticket_amount'],
+                    'did_scan': first_customer['did_scan'],
+                    'scan_amount': first_customer['scan_amount'],
+                    'deposited': first_customer['deposited'],
+                    'Customer Count': customer_count,
+                    'Deposit Count': deposit_count,
+                    'Ticket Count': ticket_count,
+                    'Scan To Send Count': scan_count,
+                    'Payment (Customer Count *40)': payment
+                }
+                result_rows.append(first_row)
+                
+                # Remaining customer rows without summary
+                for idx in range(1, len(dsa_customers)):
+                    customer = dsa_customers.iloc[idx]
+                    row = {
+                        'dsa_mobile': dsa_mobile,
+                        'customer_mobile': customer['customer_mobile'],
+                        'full_name': customer['full_name'],
+                        'bought_ticket': customer['bought_ticket'],
+                        'ticket_amount': customer['ticket_amount'],
+                        'did_scan': customer['did_scan'],
+                        'scan_amount': customer['scan_amount'],
+                        'deposited': customer['deposited'],
+                        'Customer Count': '',
+                        'Deposit Count': '',
+                        'Ticket Count': '',
+                        'Scan To Send Count': '',
+                        'Payment (Customer Count *40)': ''
+                    }
+                    result_rows.append(row)
+            
+            # Create the final qualified customers dataframe
+            qualified_customers_final = pd.DataFrame(result_rows)
+            
+            # Ensure proper column order
+            columns_order = [
+                'dsa_mobile', 'customer_mobile', 'full_name', 'bought_ticket',
+                'ticket_amount', 'did_scan', 'scan_amount', 'deposited',
+                'Customer Count', 'Deposit Count', 'Ticket Count', 
+                'Scan To Send Count', 'Payment (Customer Count *40)'
+            ]
+            qualified_customers_final = qualified_customers_final[columns_order]
+        else:
+            qualified_customers_final = pd.DataFrame(columns=[
+                'dsa_mobile', 'customer_mobile', 'full_name', 'bought_ticket',
+                'ticket_amount', 'did_scan', 'scan_amount', 'deposited',
+                'Customer Count', 'Deposit Count', 'Ticket Count', 
+                'Scan To Send Count', 'Payment (Customer Count *40)'
+            ])
         
         # Create DSA summary
         dsa_summary_all = onboarded_customers.groupby("dsa_mobile").agg(
@@ -409,7 +476,7 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
                                                       dsa_summary_all["Customer_Count"].replace(0, 1) * 100).round(2)
         
         return {
-            "qualified_customers": qualified_customers,
+            "qualified_customers": qualified_customers_final,  # Using the exact format
             "dsa_summary": dsa_summary_all,
             "onboarded_customers": onboarded_customers,
             "ticket_details": ticket_df,
@@ -425,7 +492,7 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         return None
 
 def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=None, end_date=None):
-    """Process data for Report 2 with date filtering"""
+    """Process data for Report 2 - ONLY NO ONBOARDING customers with exact sample format"""
     try:
         # Clean column names
         for df in [onboarding_df, deposit_df, ticket_df, scan_df]:
@@ -630,27 +697,28 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
                 if onboarded_by != 'NOT ONBOARDED':
                     customer_data['match_status'] = 'MATCH' if onboarded_by == dsa_mobile else 'MISMATCH'
         
-        # Create formatted output
+        # Create formatted output - ONLY NO ONBOARDING customers
         all_rows = []
         
         for dsa_mobile, customers in dsa_customers.items():
-            # Calculate summary for this DSA
-            active_customers = []
+            # Filter for NO ONBOARDING customers only
+            no_onboarding_customers = []
             for customer_mobile, customer_data in customers.items():
-                if customer_data['bought_ticket'] > 0 or customer_data['did_scan'] > 0:
-                    active_customers.append(customer_mobile)
+                if customer_data['match_status'] == 'NO ONBOARDING' and (customer_data['bought_ticket'] > 0 or customer_data['did_scan'] > 0):
+                    no_onboarding_customers.append(customer_mobile)
             
-            if not active_customers:
+            if not no_onboarding_customers:
                 continue
             
-            customer_count = len(active_customers)
-            deposit_count = sum(customers[c]['deposit_count'] for c in active_customers)
-            ticket_count = sum(customers[c]['bought_ticket'] for c in active_customers)
-            scan_count = sum(customers[c]['did_scan'] for c in active_customers)
-            payment = customer_count * 25
+            # Calculate summary for this DSA (NO ONBOARDING only)
+            customer_count = len(no_onboarding_customers)
+            deposit_count = sum(customers[c]['deposit_count'] for c in no_onboarding_customers)
+            ticket_count = sum(customers[c]['bought_ticket'] for c in no_onboarding_customers)
+            scan_count = sum(customers[c]['did_scan'] for c in no_onboarding_customers)
+            payment = customer_count * 25  # $25 per active customer as in original
             
-            # Add summary row
-            first_customer = active_customers[0] if active_customers else None
+            # Add summary row for first customer
+            first_customer = no_onboarding_customers[0] if no_onboarding_customers else None
             if first_customer:
                 first_customer_data = customers[first_customer]
                 
@@ -671,8 +739,8 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
                 }
                 all_rows.append(summary_row)
             
-            # Add remaining customer rows
-            for customer_mobile in active_customers[1:]:
+            # Add remaining customer rows (NO ONBOARDING only)
+            for customer_mobile in no_onboarding_customers[1:]:
                 customer_data = customers[customer_mobile]
                 
                 customer_row = {
@@ -712,7 +780,7 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
         # Create DataFrame
         results_df = pd.DataFrame(all_rows)
         
-        # Define column order exactly as original
+        # Define column order exactly as original sample
         columns = [
             'dsa_mobile', 'customer_mobile', 'full_name', 'bought_ticket', 
             'did_scan', 'deposited', 'onboarded_by', 'match_status',
@@ -788,14 +856,20 @@ def display_metrics(data, report_type):
             
             with col3:
                 if "qualified_customers" in data:
-                    qualified_count = len(data["qualified_customers"])
+                    # Count unique customers from qualified_customers
+                    qualified_count = data["qualified_customers"]["customer_mobile"].nunique()
                     st.metric("Qualified Customers", f"{qualified_count:,}")
                 else:
                     st.metric("Qualified Customers", "0")
             
             with col4:
                 if "qualified_customers" in data and not data["qualified_customers"].empty:
-                    total_payment = (data["qualified_customers"]["Payment (Customer Count *40)"].sum() if "Payment (Customer Count *40)" in data["qualified_customers"].columns else 0)
+                    # Calculate total payment from Customer Count column (only in first rows)
+                    payment_rows = data["qualified_customers"][data["qualified_customers"]['Customer Count'] != '']
+                    if not payment_rows.empty:
+                        total_payment = payment_rows['Payment (Customer Count *40)'].sum()
+                    else:
+                        total_payment = 0
                     st.metric("Total Payment (GMD)", f"GMD {total_payment:,.2f}")
                 else:
                     st.metric("Total Payment (GMD)", "GMD 0.00")
@@ -827,7 +901,7 @@ def display_metrics(data, report_type):
                 
                 with col2:
                     total_customers = int(summary_rows['Customer Count'].sum())
-                    st.metric("Active Customers", f"{total_customers:,}")
+                    st.metric("NO ONBOARDING Customers", f"{total_customers:,}")
                 
                 with col3:
                     total_tickets = int(summary_rows['Ticket Count'].sum())
@@ -838,12 +912,12 @@ def display_metrics(data, report_type):
                     st.metric("Total Payment (GMD)", f"GMD {total_payment:,.2f}")
             else:
                 col1.metric("Total DSAs", "0")
-                col2.metric("Active Customers", "0")
+                col2.metric("NO ONBOARDING Customers", "0")
                 col3.metric("Total Tickets", "0")
                 col4.metric("Total Payment (GMD)", "GMD 0.00")
         else:
             col1.metric("Total DSAs", "0")
-            col2.metric("Active Customers", "0")
+            col2.metric("NO ONBOARDING Customers", "0")
             col3.metric("Total Tickets", "0")
             col4.metric("Total Payment (GMD)", "GMD 0.00")
 
@@ -952,9 +1026,11 @@ def filter_data(data, filters, report_type):
     # Apply minimum payment filter
     if report_type == "report_1":
         if filters["min_payment"] > 0 and "qualified_customers" in data and not data["qualified_customers"].empty:
-            if "Payment (Customer Count *40)" in data["qualified_customers"].columns:
-                payment_data = data["qualified_customers"].groupby("dsa_mobile")["Payment (Customer Count *40)"].max().reset_index()
-                valid_dsas = payment_data[payment_data["Payment (Customer Count *40)"] >= filters["min_payment"]]["dsa_mobile"]
+            # Get payment from first rows where payment is filled
+            payment_data = data["qualified_customers"][data["qualified_customers"]['Payment (Customer Count *40)'] != '']
+            if not payment_data.empty:
+                payment_by_dsa = payment_data.groupby("dsa_mobile")['Payment (Customer Count *40)'].first().reset_index()
+                valid_dsas = payment_by_dsa[payment_by_dsa['Payment (Customer Count *40)'] >= filters["min_payment"]]["dsa_mobile"]
                 df_to_filter = df_to_filter[df_to_filter["dsa_mobile"].isin(valid_dsas)]
     else:
         if filters["min_payment"] > 0 and 'Payment' in df_to_filter.columns:
@@ -1044,18 +1120,26 @@ def create_visualizations(data, report_type):
             color_continuous_scale="Plasma"
         )
         
-        # Visualization 2: Match Status Distribution
+        # Visualization 2: Only show NO ONBOARDING distribution
         if 'match_status' in data["report_2_results"].columns:
-            match_counts = data["report_2_results"]["match_status"].value_counts().reset_index()
-            match_counts.columns = ["Match Status", "Count"]
-            
-            fig2 = px.pie(
-                match_counts,
-                values="Count",
-                names="Match Status",
-                title="Distribution of Customer Match Status",
-                hole=0.4
-            )
+            # Filter for NO ONBOARDING only
+            no_onboarding_data = data["report_2_results"][data["report_2_results"]['match_status'] == 'NO ONBOARDING']
+            if not no_onboarding_data.empty:
+                # Count by DSA
+                dsa_counts = no_onboarding_data['dsa_mobile'].value_counts().reset_index()
+                dsa_counts.columns = ["DSA Mobile", "NO ONBOARDING Customers"]
+                
+                fig2 = px.bar(
+                    dsa_counts.head(10),
+                    x="DSA Mobile",
+                    y="NO ONBOARDING Customers",
+                    title="Top 10 DSAs by NO ONBOARDING Customers",
+                    labels={"DSA Mobile": "DSA Mobile", "NO ONBOARDING Customers": "Number of Customers"},
+                    color="NO ONBOARDING Customers",
+                    color_continuous_scale="Reds"
+                )
+            else:
+                fig2 = None
         else:
             fig2 = None
         
@@ -1126,7 +1210,7 @@ def main():
         # Create tabs for different reports
         tab1, tab2, tab3, tab4 = st.tabs([
             "📋 Report 1: DSA Performance", 
-            "📊 Report 2: Detailed Analysis", 
+            "📊 Report 2: NO ONBOARDING Analysis", 
             "📈 Visualizations", 
             "📥 Download Reports"
         ])
@@ -1184,11 +1268,13 @@ def main():
                     st.markdown("#### DSA Summary Table")
                     st.dataframe(filtered_data, use_container_width=True)
                     
-                    # Show qualified customers
+                    # Show qualified customers - EXACT FORMAT as sample
                     with st.expander("View Qualified Customers Details"):
                         qualified_df = data_to_display.get("qualified_customers", pd.DataFrame())
                         if not qualified_df.empty:
+                            st.markdown("**Qualified Customers (Customers who deposited AND bought ticket/did scan):**")
                             st.dataframe(qualified_df, use_container_width=True)
+                            st.caption("Note: Payment is GMD 40 per qualified customer. Summary columns shown only for first customer per DSA.")
                         else:
                             st.info("No qualified customers found.")
                 else:
@@ -1219,7 +1305,7 @@ def main():
                 else:
                     data_to_display = st.session_state.report_2_data
                 
-                st.markdown('<div class="sub-header">Report 2: Detailed DSA Analysis (GMD)</div>', unsafe_allow_html=True)
+                st.markdown('<div class="sub-header">Report 2: NO ONBOARDING Analysis (GMD)</div>', unsafe_allow_html=True)
                 
                 # Display date filter info if applied
                 if filters["apply_filters"] and "filtered_dates" in data_to_display:
@@ -1243,7 +1329,7 @@ def main():
                 
                 # Display data
                 if not filtered_data.empty:
-                    st.markdown("#### Detailed Analysis Results")
+                    st.markdown("#### NO ONBOARDING Customers Analysis")
                     st.dataframe(filtered_data, use_container_width=True)
                     
                     # Show statistics
@@ -1252,7 +1338,7 @@ def main():
                             col1, col2 = st.columns(2)
                             
                             with col1:
-                                st.markdown("**Transaction Patterns**")
+                                st.markdown("**Transaction Patterns (NO ONBOARDING only)**")
                                 summary_rows = filtered_data[filtered_data['Customer Count'] != '']
                                 if not summary_rows.empty:
                                     # Clean numeric columns
@@ -1260,17 +1346,19 @@ def main():
                                     summary_rows['Ticket Count'] = clean_numeric_column(summary_rows['Ticket Count'])
                                     summary_rows['Scan To Send Count'] = clean_numeric_column(summary_rows['Scan To Send Count'])
                                     
-                                    st.write(f"Total DSAs: {summary_rows['dsa_mobile'].nunique()}")
-                                    st.write(f"Total Active Customers: {int(summary_rows['Customer Count'].sum())}")
+                                    st.write(f"Total DSAs with NO ONBOARDING: {summary_rows['dsa_mobile'].nunique()}")
+                                    st.write(f"Total NO ONBOARDING Customers: {int(summary_rows['Customer Count'].sum())}")
                                     st.write(f"Total Tickets Purchased: {int(summary_rows['Ticket Count'].sum())}")
                                     st.write(f"Total Scans Completed: {int(summary_rows['Scan To Send Count'].sum())}")
+                                    st.write(f"Average Payment per DSA: GMD {float(summary_rows['Payment'].mean()):,.2f}")
                             
                             with col2:
-                                st.markdown("**Match Status**")
-                                if 'match_status' in filtered_data.columns:
-                                    match_stats = filtered_data['match_status'].value_counts()
-                                    for status, count in match_stats.items():
-                                        st.write(f"{status}: {int(count)}")
+                                st.markdown("**Payment Summary**")
+                                if not summary_rows.empty:
+                                    st.write(f"Total Payment (GMD): GMD {float(summary_rows['Payment'].sum()):,.2f}")
+                                    st.write(f"Minimum Payment: GMD {float(summary_rows['Payment'].min()):,.2f}")
+                                    st.write(f"Maximum Payment: GMD {float(summary_rows['Payment'].max()):,.2f}")
+                                    st.write(f"Average Customers per DSA: {float(summary_rows['Customer Count'].mean()):.1f}")
                 else:
                     st.info("No data available for Report 2 with current filters.")
             else:
@@ -1336,7 +1424,7 @@ def main():
             
             with col2:
                 if st.session_state.report_2_data and "report_2_results" in st.session_state.report_2_data and not st.session_state.report_2_data["report_2_results"].empty:
-                    st.markdown("#### Report 2: Detailed Analysis")
+                    st.markdown("#### Report 2: NO ONBOARDING Analysis")
                     # Use filtered data for download if available
                     data_for_download_2 = st.session_state.filtered_report_2 if st.session_state.filtered_report_2 else st.session_state.report_2_data
                     excel_file_2 = create_excel_download(data_for_download_2, "report_2")
@@ -1345,7 +1433,7 @@ def main():
                         st.download_button(
                             label="📥 Download Report 2 (Excel)",
                             data=excel_file_2,
-                            file_name=f"DSA_Detailed_Analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                            file_name=f"DSA_NO_ONBOARDING_Analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
                     
@@ -1354,7 +1442,7 @@ def main():
                     st.download_button(
                         label="📥 Download Analysis (CSV)",
                         data=csv_2,
-                        file_name=f"DSA_Analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        file_name=f"DSA_NO_ONBOARDING_Analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                         mime="text/csv"
                     )
     
@@ -1379,6 +1467,10 @@ def main():
         - 📥 **Download reports** in Excel or CSV format
         - 🔄 **Real-time calculations** based on your filters
         - 💰 **GMD currency** support for all financial metrics
+        
+        ### Report Details:
+        - **Report 1**: Shows qualified customers who deposited AND bought ticket/did scan
+        - **Report 2**: Shows ONLY NO ONBOARDING customers with deposit and ticket/scan activity
         
         ### Sample Data Format:
         The dashboard is designed to work with the sample data formats you provided:
