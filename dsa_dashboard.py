@@ -18,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
+# Custom CSS with GMD currency
 st.markdown("""
     <style>
     .main-header {
@@ -49,11 +49,16 @@ st.markdown("""
         background-color: #10B981;
         color: white;
     }
+    .currency-gmd {
+        font-size: 1.2rem;
+        font-weight: bold;
+        color: #059669;
+    }
     </style>
 """, unsafe_allow_html=True)
 
 # Main header
-st.markdown('<div class="main-header">📊 DSA Performance Analysis Dashboard</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">📊 DSA Performance Analysis Dashboard (GMD)</div>', unsafe_allow_html=True)
 
 # Initialize session state for file storage
 if 'uploaded_files' not in st.session_state:
@@ -78,8 +83,27 @@ def clean_mobile_number(mobile):
     else:
         return mobile_clean
 
+def safe_str_access(series):
+    """Safely apply string operations to a series"""
+    if series.dtype == 'object':
+        return series.astype(str).str.strip()
+    else:
+        return series.astype(str).str.strip()
+
+def clean_currency_amount(amount):
+    """Clean currency amounts, handling GMD specifically"""
+    if pd.isna(amount):
+        return 0
+    amount_str = str(amount)
+    # Remove GMD symbol, commas, and spaces
+    amount_clean = amount_str.replace('GMD', '').replace(',', '').replace(' ', '').strip()
+    try:
+        return float(amount_clean)
+    except:
+        return 0
+
 def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_df):
-    """Process data for Report 1"""
+    """Process data for Report 1 - FIXED VERSION"""
     try:
         # Clean column names
         for df in [onboarding_df, ticket_df, conversion_df, deposit_df, scan_df]:
@@ -96,67 +120,116 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
                 "created_at", "business_hierarchy", "parent_user_id", "parent_full_name"
             ]
         
-        # Rename columns for consistency
+        # Rename columns for consistency - FIXED: Check if columns exist
         name_cols = ["full_name", "Full Name", "Name"]
-        name_col = next((c for c in name_cols if c in onboarding_df.columns), None)
+        name_col = None
+        for col in name_cols:
+            if col in onboarding_df.columns:
+                name_col = col
+                break
+        
         if name_col is None:
-            onboarding_df["full_name"] = "Unknown"
+            # Try to find any column containing "name"
+            name_cols_found = [col for col in onboarding_df.columns if 'name' in col.lower()]
+            if name_cols_found:
+                name_col = name_cols_found[0]
+            else:
+                onboarding_df["full_name"] = "Unknown"
         else:
             onboarding_df = onboarding_df.rename(columns={name_col: "full_name"})
         
-        onboarding_df = onboarding_df.rename(columns={
-            "Customer Referrer Mobile": "dsa_mobile",
-            "Mobile": "customer_mobile"
-        })
+        # Safely rename columns only if they exist
+        if "Customer Referrer Mobile" in onboarding_df.columns:
+            onboarding_df = onboarding_df.rename(columns={"Customer Referrer Mobile": "dsa_mobile"})
         
-        # Clean deposit customer column
+        if "Mobile" in onboarding_df.columns:
+            onboarding_df = onboarding_df.rename(columns={"Mobile": "customer_mobile"})
+        
+        # Clean deposit customer column - FIXED: Handle missing columns
+        deposit_customer_col = None
         possible_cols = ['customer_mobile', 'Customer Mobile', 'Mobile', 'User Identifier']
-        deposit_customer_col = next((c for c in possible_cols if c in deposit_df.columns), None)
+        for col in possible_cols:
+            if col in deposit_df.columns:
+                deposit_customer_col = col
+                break
+        
         if deposit_customer_col is None:
-            st.error("No suitable customer/mobile column found in Deposit data")
-            return None
+            # Try any column with 'mobile' or 'identifier'
+            mobile_cols = [col for col in deposit_df.columns if 'mobile' in col.lower() or 'identifier' in col.lower()]
+            if mobile_cols:
+                deposit_customer_col = mobile_cols[0]
+            else:
+                st.error("No suitable customer/mobile column found in Deposit data")
+                return None
+        
         deposit_df = deposit_df.rename(columns={deposit_customer_col: "customer_mobile"})
         
-        conversion_df = conversion_df.rename(columns={"Agent Mobile": "dsa_mobile", "Deposit Count": "deposit_count"})
+        # Handle conversion data if provided
+        if not conversion_df.empty:
+            if "Agent Mobile" in conversion_df.columns:
+                conversion_df = conversion_df.rename(columns={"Agent Mobile": "dsa_mobile"})
+            if "Deposit Count" in conversion_df.columns:
+                conversion_df = conversion_df.rename(columns={"Deposit Count": "deposit_count"})
         
-        # Clean ticket customer column
+        # Clean ticket customer column - FIXED: Handle missing columns
+        ticket_customer_col = None
         ticket_customer_cols = ["created_by", "user_id"]
-        ticket_customer_col = next((c for c in ticket_customer_cols if c in ticket_df.columns), None)
+        for col in ticket_customer_cols:
+            if col in ticket_df.columns:
+                ticket_customer_col = col
+                break
+        
         if ticket_customer_col is None:
-            st.error(f"No suitable customer column found in Ticket data")
-            return None
-        ticket_df = ticket_df.rename(columns={ticket_customer_col: "customer_mobile", "amount": "ticket_amount"})
+            # Try any column that might contain customer info
+            customer_cols = [col for col in ticket_df.columns if 'user' in col.lower() or 'customer' in col.lower() or 'mobile' in col.lower()]
+            if customer_cols:
+                ticket_customer_col = customer_cols[0]
+            else:
+                st.error(f"No suitable customer column found in Ticket data. Available columns: {list(ticket_df.columns)}")
+                return None
         
-        # Clean scan customer column
+        ticket_df = ticket_df.rename(columns={ticket_customer_col: "customer_mobile"})
+        
+        # Clean scan customer column - FIXED: Handle missing columns
+        scan_customer_col = None
         scan_customer_cols = ['Created By', 'Customer Mobile', 'Mobile', 'User Identifier']
-        scan_customer_col = next((c for c in scan_customer_cols if c in scan_df.columns), None)
-        if scan_customer_col is None:
-            st.error(f"No suitable customer column found in Scan data")
-            return None
-        scan_df = scan_df.rename(columns={scan_customer_col: "customer_mobile", "Amount": "scan_amount"})
+        for col in scan_customer_cols:
+            if col in scan_df.columns:
+                scan_customer_col = col
+                break
         
-        # Clean mobile numbers
+        if scan_customer_col is None:
+            # Try any column that might contain customer info
+            scan_cols = [col for col in scan_df.columns if 'user' in col.lower() or 'customer' in col.lower() or 'mobile' in col.lower() or 'created' in col.lower()]
+            if scan_cols:
+                scan_customer_col = scan_cols[0]
+            else:
+                st.error(f"No suitable customer column found in Scan data. Available columns: {list(scan_df.columns)}")
+                return None
+        
+        scan_df = scan_df.rename(columns={scan_customer_col: "customer_mobile"})
+        
+        # Clean mobile numbers - FIXED: Use safe string access
         for df, col in [(onboarding_df, "customer_mobile"), (onboarding_df, "dsa_mobile"),
                         (deposit_df, "customer_mobile"), (ticket_df, "customer_mobile"),
                         (scan_df, "customer_mobile"), (conversion_df, "dsa_mobile")]:
             if col in df.columns:
-                df[col] = df[col].astype(str).str.strip()
+                df[col] = safe_str_access(df[col])
         
-        # Clean numeric columns
-        if "ticket_amount" in ticket_df.columns:
-            ticket_df["ticket_amount"] = pd.to_numeric(
-                ticket_df["ticket_amount"].astype(str).str.replace(",", ""), 
-                errors='coerce'
-            ).fillna(0)
+        # Clean numeric columns - FIXED: Handle GMD currency
+        if "amount" in ticket_df.columns:
+            ticket_df["ticket_amount"] = ticket_df["amount"].apply(clean_currency_amount)
+        elif "ticket_amount" not in ticket_df.columns:
+            ticket_df["ticket_amount"] = 0
         
-        if "scan_amount" in scan_df.columns:
-            scan_df["scan_amount"] = pd.to_numeric(
-                scan_df["scan_amount"].astype(str).str.replace(",", ""), 
-                errors='coerce'
-            ).fillna(0)
+        if "Amount" in scan_df.columns:
+            scan_df["scan_amount"] = scan_df["Amount"].apply(clean_currency_amount)
+        elif "scan_amount" not in scan_df.columns:
+            scan_df["scan_amount"] = 0
         
-        # Filter ticket data for customers only
+        # Filter ticket data for customers only - FIXED: Check column exists
         if "entity_name" in ticket_df.columns:
+            ticket_df["entity_name"] = safe_str_access(ticket_df["entity_name"])
             ticket_df = ticket_df[ticket_df["entity_name"].str.lower() == "customer"]
         
         # Aggregate ticket data
@@ -208,12 +281,13 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         ].copy()
         
         # Sort and add running counts
-        qualified_customers = qualified_customers.sort_values(["dsa_mobile", "customer_mobile"])
-        qualified_customers["Customer Count"] = qualified_customers.groupby("dsa_mobile").cumcount() + 1
-        qualified_customers["Deposit Count"] = qualified_customers.groupby("dsa_mobile")["deposited"].cumsum()
-        qualified_customers["Ticket Count"] = qualified_customers.groupby("dsa_mobile")["bought_ticket"].cumsum()
-        qualified_customers["Scan To Send Count"] = qualified_customers.groupby("dsa_mobile")["did_scan"].cumsum()
-        qualified_customers["Payment (Customer Count *40)"] = qualified_customers.groupby("dsa_mobile")["Customer Count"].transform(lambda x: x.max() * 40)
+        if not qualified_customers.empty:
+            qualified_customers = qualified_customers.sort_values(["dsa_mobile", "customer_mobile"])
+            qualified_customers["Customer Count"] = qualified_customers.groupby("dsa_mobile").cumcount() + 1
+            qualified_customers["Deposit Count"] = qualified_customers.groupby("dsa_mobile")["deposited"].cumsum()
+            qualified_customers["Ticket Count"] = qualified_customers.groupby("dsa_mobile")["bought_ticket"].cumsum()
+            qualified_customers["Scan To Send Count"] = qualified_customers.groupby("dsa_mobile")["did_scan"].cumsum()
+            qualified_customers["Payment (Customer Count *40)"] = qualified_customers.groupby("dsa_mobile")["Customer Count"].transform(lambda x: x.max() * 40)
         
         # Create DSA summary
         dsa_summary_all = onboarded_customers.groupby("dsa_mobile").agg(
@@ -225,7 +299,7 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
             Total_Scan_Amount=("scan_amount", "sum")
         ).reset_index()
         
-        if "dsa_mobile" in conversion_df.columns:
+        if not conversion_df.empty and "dsa_mobile" in conversion_df.columns:
             dsa_summary_all = dsa_summary_all.merge(
                 conversion_df[["dsa_mobile", "deposit_count"]].drop_duplicates(),
                 on="dsa_mobile",
@@ -251,10 +325,12 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         
     except Exception as e:
         st.error(f"Error processing Report 1: {str(e)}")
+        import traceback
+        st.error(f"Traceback: {traceback.format_exc()}")
         return None
 
 def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
-    """Process data for Report 2"""
+    """Process data for Report 2 - FIXED VERSION"""
     try:
         # Clean column names
         for df in [onboarding_df, deposit_df, ticket_df, scan_df]:
@@ -330,7 +406,15 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
         dsa_customers = {}
         
         # Filter deposits for customer deposits (CR)
-        customer_deposits = deposit_df[deposit_df['Transaction Type'] == 'CR'].copy()
+        if 'Transaction Type' in deposit_df.columns:
+            customer_deposits = deposit_df[deposit_df['Transaction Type'] == 'CR'].copy()
+        else:
+            # Try to find transaction type column
+            tx_type_cols = [col for col in deposit_df.columns if 'transaction' in col.lower() and 'type' in col.lower()]
+            if tx_type_cols:
+                customer_deposits = deposit_df[deposit_df[tx_type_cols[0]] == 'CR'].copy()
+            else:
+                customer_deposits = deposit_df.copy()
         
         for _, row in customer_deposits.iterrows():
             customer_mobile = row.get('User Identifier')
@@ -355,7 +439,15 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
             dsa_customers[dsa_mobile][customer_mobile]['deposit_count'] += 1
         
         # Analyze ticket purchases
-        customer_tickets = ticket_df[ticket_df['Transaction Type'] == 'DR'].copy()
+        if 'Transaction Type' in ticket_df.columns:
+            customer_tickets = ticket_df[ticket_df['Transaction Type'] == 'DR'].copy()
+        else:
+            # Try to find transaction type column
+            tx_type_cols = [col for col in ticket_df.columns if 'transaction' in col.lower() and 'type' in col.lower()]
+            if tx_type_cols:
+                customer_tickets = ticket_df[ticket_df[tx_type_cols[0]] == 'DR'].copy()
+            else:
+                customer_tickets = ticket_df.copy()
         
         for _, row in customer_tickets.iterrows():
             customer_mobile = row.get('User Identifier')
@@ -368,7 +460,15 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
                     break
         
         # Analyze scan transactions
-        customer_scans = scan_df[scan_df['Transaction Type'] == 'DR'].copy()
+        if 'Transaction Type' in scan_df.columns:
+            customer_scans = scan_df[scan_df['Transaction Type'] == 'DR'].copy()
+        else:
+            # Try to find transaction type column
+            tx_type_cols = [col for col in scan_df.columns if 'transaction' in col.lower() and 'type' in col.lower()]
+            if tx_type_cols:
+                customer_scans = scan_df[scan_df[tx_type_cols[0]] == 'DR'].copy()
+            else:
+                customer_scans = scan_df.copy()
         
         for _, row in customer_scans.iterrows():
             customer_mobile = row.get('User Identifier')
@@ -460,7 +560,13 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
             'Scan To Send Count', 'Payment'
         ]
         
-        results_df = results_df[columns] if not results_df.empty else pd.DataFrame(columns=columns)
+        # Filter to only include columns that exist
+        columns = [col for col in columns if col in results_df.columns or col in ['Customer Count', 'Deposit Count', 'Ticket Count', 'Scan To Send Count', 'Payment']]
+        
+        if not results_df.empty:
+            results_df = results_df[columns]
+        else:
+            results_df = pd.DataFrame(columns=columns)
         
         return {
             "report_2_results": results_df,
@@ -471,6 +577,8 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df):
         
     except Exception as e:
         st.error(f"Error processing Report 2: {str(e)}")
+        import traceback
+        st.error(f"Traceback: {traceback.format_exc()}")
         return None
 
 def create_excel_download(data, report_type):
@@ -480,15 +588,22 @@ def create_excel_download(data, report_type):
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             if report_type == "report_1":
                 # Report 1 sheets
-                data["qualified_customers"].to_excel(writer, index=False, sheet_name="Qualified_Customers")
-                data["dsa_summary"].to_excel(writer, index=False, sheet_name="DSA_Summary")
-                data["onboarded_customers"].to_excel(writer, index=False, sheet_name="All_Customers")
-                data["ticket_details"].to_excel(writer, index=False, sheet_name="Ticket_Details")
-                data["scan_details"].to_excel(writer, index=False, sheet_name="Scan_Details")
-                data["deposit_details"].to_excel(writer, index=False, sheet_name="Deposit_Details")
+                if "qualified_customers" in data and not data["qualified_customers"].empty:
+                    data["qualified_customers"].to_excel(writer, index=False, sheet_name="Qualified_Customers")
+                if "dsa_summary" in data and not data["dsa_summary"].empty:
+                    data["dsa_summary"].to_excel(writer, index=False, sheet_name="DSA_Summary")
+                if "onboarded_customers" in data and not data["onboarded_customers"].empty:
+                    data["onboarded_customers"].to_excel(writer, index=False, sheet_name="All_Customers")
+                if "ticket_details" in data and not data["ticket_details"].empty:
+                    data["ticket_details"].to_excel(writer, index=False, sheet_name="Ticket_Details")
+                if "scan_details" in data and not data["scan_details"].empty:
+                    data["scan_details"].to_excel(writer, index=False, sheet_name="Scan_Details")
+                if "deposit_details" in data and not data["deposit_details"].empty:
+                    data["deposit_details"].to_excel(writer, index=False, sheet_name="Deposit_Details")
             else:
                 # Report 2 sheet
-                data["report_2_results"].to_excel(writer, index=False, sheet_name="DSA_Analysis")
+                if "report_2_results" in data and not data["report_2_results"].empty:
+                    data["report_2_results"].to_excel(writer, index=False, sheet_name="DSA_Analysis")
         
         output.seek(0)
         return output
@@ -497,32 +612,51 @@ def create_excel_download(data, report_type):
         return None
 
 def display_metrics(data, report_type):
-    """Display key metrics"""
+    """Display key metrics - FIXED VERSION"""
     col1, col2, col3, col4 = st.columns(4)
     
     if report_type == "report_1":
-        with col1:
-            total_dsas = data["dsa_summary"]["dsa_mobile"].nunique()
-            st.metric("Total DSAs", f"{total_dsas:,}")
-        
-        with col2:
-            total_customers = len(data["onboarded_customers"])
-            st.metric("Total Onboarded Customers", f"{total_customers:,}")
-        
-        with col3:
-            qualified_count = len(data["qualified_customers"])
-            st.metric("Qualified Customers", f"{qualified_count:,}")
-        
-        with col4:
-            total_payment = (data["qualified_customers"]["Payment (Customer Count *40)"] / 2).sum()
-            st.metric("Total Payment ($)", f"${total_payment:,.2f}")
+        if "dsa_summary" in data and not data["dsa_summary"].empty:
+            with col1:
+                total_dsas = data["dsa_summary"]["dsa_mobile"].nunique()
+                st.metric("Total DSAs", f"{total_dsas:,}")
+            
+            with col2:
+                if "onboarded_customers" in data:
+                    total_customers = len(data["onboarded_customers"])
+                    st.metric("Total Onboarded Customers", f"{total_customers:,}")
+                else:
+                    st.metric("Total Onboarded Customers", "0")
+            
+            with col3:
+                if "qualified_customers" in data:
+                    qualified_count = len(data["qualified_customers"])
+                    st.metric("Qualified Customers", f"{qualified_count:,}")
+                else:
+                    st.metric("Qualified Customers", "0")
+            
+            with col4:
+                if "qualified_customers" in data and not data["qualified_customers"].empty:
+                    total_payment = (data["qualified_customers"]["Payment (Customer Count *40)"].sum() if "Payment (Customer Count *40)" in data["qualified_customers"].columns else 0)
+                    st.metric("Total Payment (GMD)", f"GMD {total_payment:,.2f}")
+                else:
+                    st.metric("Total Payment (GMD)", "GMD 0.00")
+        else:
+            col1.metric("Total DSAs", "0")
+            col2.metric("Total Onboarded Customers", "0")
+            col3.metric("Qualified Customers", "0")
+            col4.metric("Total Payment (GMD)", "GMD 0.00")
     
     else:
-        if not data["report_2_results"].empty:
+        if "report_2_results" in data and not data["report_2_results"].empty:
+            # Clean Payment column - convert empty strings to 0
+            if 'Payment' in data["report_2_results"].columns:
+                data["report_2_results"]['Payment'] = pd.to_numeric(data["report_2_results"]['Payment'].replace('', '0'), errors='coerce').fillna(0)
+            
             summary_rows = data["report_2_results"][data["report_2_results"]['Customer Count'] != '']
             
             with col1:
-                total_dsas = summary_rows['dsa_mobile'].nunique()
+                total_dsas = summary_rows['dsa_mobile'].nunique() if not summary_rows.empty else 0
                 st.metric("Total DSAs", f"{total_dsas:,}")
             
             with col2:
@@ -535,7 +669,12 @@ def display_metrics(data, report_type):
             
             with col4:
                 total_payment = summary_rows['Payment'].sum() if not summary_rows.empty else 0
-                st.metric("Total Payment ($)", f"${total_payment:,.2f}")
+                st.metric("Total Payment (GMD)", f"GMD {total_payment:,.2f}")
+        else:
+            col1.metric("Total DSAs", "0")
+            col2.metric("Active Customers", "0")
+            col3.metric("Total Tickets", "0")
+            col4.metric("Total Payment (GMD)", "GMD 0.00")
 
 def display_filters():
     """Display filtering options in sidebar"""
@@ -565,9 +704,9 @@ def display_filters():
     )
     
     dsa_list = []
-    if 'processed_data' in st.session_state:
-        if 'report_1_data' in st.session_state and st.session_state.report_1_data:
-            dsa_list = st.session_state.report_1_data.get("dsa_summary", pd.DataFrame()).get("dsa_mobile", pd.Series()).unique().tolist()
+    if 'report_1_data' in st.session_state and st.session_state.report_1_data:
+        if "dsa_summary" in st.session_state.report_1_data and not st.session_state.report_1_data["dsa_summary"].empty:
+            dsa_list = st.session_state.report_1_data["dsa_summary"]["dsa_mobile"].unique().tolist()
     
     if dsa_option == "Single DSA":
         selected_dsa = st.sidebar.selectbox("Select DSA", dsa_list if dsa_list else ["No data available"])
@@ -579,7 +718,7 @@ def display_filters():
     # Additional filters
     st.sidebar.markdown("**Additional Filters**")
     min_customers = st.sidebar.number_input("Minimum Customers", min_value=0, value=0)
-    min_payment = st.sidebar.number_input("Minimum Payment ($)", min_value=0, value=0)
+    min_payment = st.sidebar.number_input("Minimum Payment (GMD)", min_value=0, value=0)
     
     apply_filters = st.sidebar.button("Apply Filters", type="primary")
     
@@ -598,8 +737,12 @@ def display_filters():
 def filter_data(data, filters, report_type):
     """Filter data based on selected filters"""
     if report_type == "report_1":
+        if "dsa_summary" not in data or data["dsa_summary"].empty:
+            return pd.DataFrame()
         df_to_filter = data["dsa_summary"].copy()
     else:
+        if "report_2_results" not in data or data["report_2_results"].empty:
+            return pd.DataFrame()
         df_to_filter = data["report_2_results"].copy()
     
     # Apply DSA filter
@@ -610,32 +753,42 @@ def filter_data(data, filters, report_type):
     
     # Apply minimum customers filter
     if report_type == "report_1":
-        if filters["min_customers"] > 0:
+        if filters["min_customers"] > 0 and "Customer_Count" in df_to_filter.columns:
             df_to_filter = df_to_filter[df_to_filter["Customer_Count"] >= filters["min_customers"]]
     else:
-        if filters["min_customers"] > 0:
-            summary_rows = df_to_filter[df_to_filter['Customer Count'] != '']
-            valid_dsas = summary_rows[summary_rows['Customer Count'] >= filters["min_customers"]]['dsa_mobile']
-            df_to_filter = df_to_filter[df_to_filter['dsa_mobile'].isin(valid_dsas)]
+        if filters["min_customers"] > 0 and 'Customer Count' in df_to_filter.columns:
+            # Clean Customer Count column
+            df_to_filter['Customer Count'] = pd.to_numeric(df_to_filter['Customer Count'].replace('', '0'), errors='coerce').fillna(0)
+            summary_rows = df_to_filter[df_to_filter['Customer Count'] > 0]
+            if not summary_rows.empty:
+                valid_dsas = summary_rows[summary_rows['Customer Count'] >= filters["min_customers"]]['dsa_mobile']
+                df_to_filter = df_to_filter[df_to_filter['dsa_mobile'].isin(valid_dsas)]
     
     # Apply minimum payment filter
     if report_type == "report_1":
-        if filters["min_payment"] > 0:
+        if filters["min_payment"] > 0 and "qualified_customers" in data and not data["qualified_customers"].empty:
             # Calculate payment for each DSA
-            payment_data = data["qualified_customers"].groupby("dsa_mobile")["Payment (Customer Count *40)"].max().reset_index()
-            valid_dsas = payment_data[payment_data["Payment (Customer Count *40)"] >= filters["min_payment"]]["dsa_mobile"]
-            df_to_filter = df_to_filter[df_to_filter["dsa_mobile"].isin(valid_dsas)]
+            if "Payment (Customer Count *40)" in data["qualified_customers"].columns:
+                payment_data = data["qualified_customers"].groupby("dsa_mobile")["Payment (Customer Count *40)"].max().reset_index()
+                valid_dsas = payment_data[payment_data["Payment (Customer Count *40)"] >= filters["min_payment"]]["dsa_mobile"]
+                df_to_filter = df_to_filter[df_to_filter["dsa_mobile"].isin(valid_dsas)]
     else:
-        if filters["min_payment"] > 0:
-            summary_rows = df_to_filter[df_to_filter['Payment'] != '']
-            valid_dsas = summary_rows[summary_rows['Payment'] >= filters["min_payment"]]['dsa_mobile']
-            df_to_filter = df_to_filter[df_to_filter['dsa_mobile'].isin(valid_dsas)]
+        if filters["min_payment"] > 0 and 'Payment' in df_to_filter.columns:
+            # Clean Payment column
+            df_to_filter['Payment'] = pd.to_numeric(df_to_filter['Payment'].replace('', '0'), errors='coerce').fillna(0)
+            summary_rows = df_to_filter[df_to_filter['Payment'] > 0]
+            if not summary_rows.empty:
+                valid_dsas = summary_rows[summary_rows['Payment'] >= filters["min_payment"]]['dsa_mobile']
+                df_to_filter = df_to_filter[df_to_filter['dsa_mobile'].isin(valid_dsas)]
     
     return df_to_filter
 
 def create_visualizations(data, report_type):
-    """Create visualizations for the dashboard"""
+    """Create visualizations for the dashboard - FIXED VERSION"""
     if report_type == "report_1":
+        if "dsa_summary" not in data or data["dsa_summary"].empty:
+            return None, None
+        
         # Visualization 1: Top DSAs by Customer Count
         top_dsas = data["dsa_summary"].nlargest(10, "Customer_Count")
         
@@ -650,51 +803,78 @@ def create_visualizations(data, report_type):
         )
         
         # Visualization 2: Conversion Rates
-        fig2 = px.bar(
-            data["dsa_summary"].nlargest(10, "Deposit_Conversion_Rate"),
-            x="dsa_mobile",
-            y=["Deposit_Conversion_Rate", "Ticket_Conversion_Rate", "Scan_Conversion_Rate"],
-            title="Top 10 DSAs by Conversion Rates",
-            labels={"dsa_mobile": "DSA Mobile", "value": "Conversion Rate (%)"},
-            barmode="group"
-        )
+        # Check which conversion rate columns exist
+        conversion_cols = []
+        if "Deposit_Conversion_Rate" in data["dsa_summary"].columns:
+            conversion_cols.append("Deposit_Conversion_Rate")
+        if "Ticket_Conversion_Rate" in data["dsa_summary"].columns:
+            conversion_cols.append("Ticket_Conversion_Rate")
+        if "Scan_Conversion_Rate" in data["dsa_summary"].columns:
+            conversion_cols.append("Scan_Conversion_Rate")
+        
+        if conversion_cols:
+            fig2 = px.bar(
+                data["dsa_summary"].nlargest(10, conversion_cols[0]),
+                x="dsa_mobile",
+                y=conversion_cols,
+                title="Top 10 DSAs by Conversion Rates",
+                labels={"dsa_mobile": "DSA Mobile", "value": "Conversion Rate (%)"},
+                barmode="group"
+            )
+        else:
+            fig2 = None
         
         return fig1, fig2
     
     else:
-        if data["report_2_results"].empty:
+        if "report_2_results" not in data or data["report_2_results"].empty:
             return None, None
         
-        # Get summary rows
-        summary_rows = data["report_2_results"][data["report_2_results"]['Customer Count'] != '']
+        # Get summary rows - FIXED: Handle empty strings in Payment column
+        if 'Payment' in data["report_2_results"].columns:
+            # Clean Payment column: convert empty strings to 0
+            data["report_2_results"]['Payment_clean'] = pd.to_numeric(
+                data["report_2_results"]['Payment'].replace('', '0'), 
+                errors='coerce'
+            ).fillna(0)
+            
+            summary_rows = data["report_2_results"][
+                (data["report_2_results"]['Customer Count'] != '') & 
+                (data["report_2_results"]['Customer Count'] != 0)
+            ]
+        else:
+            summary_rows = pd.DataFrame()
         
         if summary_rows.empty:
             return None, None
         
-        # Visualization 1: Top DSAs by Payment
-        top_payment = summary_rows.nlargest(10, "Payment")
+        # Visualization 1: Top DSAs by Payment - FIXED: Use cleaned Payment column
+        top_payment = summary_rows.nlargest(10, "Payment_clean" if "Payment_clean" in summary_rows.columns else "Payment")
         
         fig1 = px.bar(
             top_payment,
             x="dsa_mobile",
-            y="Payment",
-            title="Top 10 DSAs by Payment",
-            labels={"dsa_mobile": "DSA Mobile", "Payment": "Payment Amount ($)"},
-            color="Payment",
+            y="Payment_clean" if "Payment_clean" in top_payment.columns else "Payment",
+            title="Top 10 DSAs by Payment (GMD)",
+            labels={"dsa_mobile": "DSA Mobile", "Payment_clean": "Payment Amount (GMD)", "Payment": "Payment Amount (GMD)"},
+            color="Payment_clean" if "Payment_clean" in top_payment.columns else "Payment",
             color_continuous_scale="Plasma"
         )
         
         # Visualization 2: Match Status Distribution
-        match_counts = data["report_2_results"]["match_status"].value_counts().reset_index()
-        match_counts.columns = ["Match Status", "Count"]
-        
-        fig2 = px.pie(
-            match_counts,
-            values="Count",
-            names="Match Status",
-            title="Distribution of Customer Match Status",
-            hole=0.4
-        )
+        if 'match_status' in data["report_2_results"].columns:
+            match_counts = data["report_2_results"]["match_status"].value_counts().reset_index()
+            match_counts.columns = ["Match Status", "Count"]
+            
+            fig2 = px.pie(
+                match_counts,
+                values="Count",
+                names="Match Status",
+                title="Distribution of Customer Match Status",
+                hole=0.4
+            )
+        else:
+            fig2 = None
         
         return fig1, fig2
 
@@ -706,7 +886,7 @@ def main():
     # File uploaders
     onboarding_file = st.sidebar.file_uploader("Onboarding Data (CSV)", type=['csv'])
     ticket_file = st.sidebar.file_uploader("Ticket Data (CSV)", type=['csv'])
-    conversion_file = st.sidebar.file_uploader("Conversion Data (CSV)", type=['csv'])
+    conversion_file = st.sidebar.file_uploader("Conversion Data (CSV) - Optional", type=['csv'])
     deposit_file = st.sidebar.file_uploader("Deposit Data (CSV)", type=['csv'])
     scan_file = st.sidebar.file_uploader("Scan Data (CSV)", type=['csv'])
     
@@ -718,7 +898,9 @@ def main():
             ticket_df = pd.read_csv(ticket_file)
             deposit_df = pd.read_csv(deposit_file, low_memory=False)
             scan_df = pd.read_csv(scan_file, low_memory=False)
-            conversion_df = pd.read_csv(conversion_file) if conversion_file else pd.DataFrame()
+            conversion_df = pd.DataFrame()
+            if conversion_file:
+                conversion_df = pd.read_csv(conversion_file)
             
             # Store in session state
             st.session_state.uploaded_files = {
@@ -734,16 +916,24 @@ def main():
                 report_1_data = process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_df)
                 if report_1_data:
                     st.session_state.report_1_data = report_1_data
+                    st.success("✓ Report 1 processed successfully!")
+                else:
+                    st.warning("Report 1 processing completed with warnings")
             
             with st.spinner("Processing Report 2..."):
                 report_2_data = process_report_2(onboarding_df, deposit_df, ticket_df, scan_df)
                 if report_2_data:
                     st.session_state.report_2_data = report_2_data
+                    st.success("✓ Report 2 processed successfully!")
+                else:
+                    st.warning("Report 2 processing completed with warnings")
             
-            st.sidebar.success("✓ Files processed successfully!")
+            st.sidebar.success("✓ All files processed successfully!")
             
         except Exception as e:
             st.sidebar.error(f"Error processing files: {str(e)}")
+            import traceback
+            st.sidebar.error(f"Traceback: {traceback.format_exc()}")
     
     # Get filters
     filters = display_filters()
@@ -760,7 +950,7 @@ def main():
         
         with tab1:
             if st.session_state.report_1_data:
-                st.markdown('<div class="sub-header">Report 1: DSA Performance Summary</div>', unsafe_allow_html=True)
+                st.markdown('<div class="sub-header">Report 1: DSA Performance Summary (GMD)</div>', unsafe_allow_html=True)
                 
                 # Display metrics
                 display_metrics(st.session_state.report_1_data, "report_1")
@@ -769,19 +959,26 @@ def main():
                 if filters["apply_filters"]:
                     filtered_data = filter_data(st.session_state.report_1_data, filters, "report_1")
                 else:
-                    filtered_data = st.session_state.report_1_data["dsa_summary"]
+                    filtered_data = st.session_state.report_1_data.get("dsa_summary", pd.DataFrame())
                 
                 # Display data
-                st.markdown("#### DSA Summary Table")
-                st.dataframe(filtered_data, use_container_width=True)
-                
-                # Show qualified customers
-                with st.expander("View Qualified Customers Details"):
-                    st.dataframe(st.session_state.report_1_data["qualified_customers"], use_container_width=True)
+                if not filtered_data.empty:
+                    st.markdown("#### DSA Summary Table")
+                    st.dataframe(filtered_data, use_container_width=True)
+                    
+                    # Show qualified customers
+                    with st.expander("View Qualified Customers Details"):
+                        qualified_df = st.session_state.report_1_data.get("qualified_customers", pd.DataFrame())
+                        if not qualified_df.empty:
+                            st.dataframe(qualified_df, use_container_width=True)
+                        else:
+                            st.info("No qualified customers found.")
+                else:
+                    st.info("No data available for Report 1 with current filters.")
         
         with tab2:
-            if st.session_state.report_2_data and not st.session_state.report_2_data["report_2_results"].empty:
-                st.markdown('<div class="sub-header">Report 2: Detailed DSA Analysis</div>', unsafe_allow_html=True)
+            if st.session_state.report_2_data and "report_2_results" in st.session_state.report_2_data and not st.session_state.report_2_data["report_2_results"].empty:
+                st.markdown('<div class="sub-header">Report 2: Detailed DSA Analysis (GMD)</div>', unsafe_allow_html=True)
                 
                 # Display metrics
                 display_metrics(st.session_state.report_2_data, "report_2")
@@ -793,29 +990,34 @@ def main():
                     filtered_data = st.session_state.report_2_data["report_2_results"]
                 
                 # Display data
-                st.markdown("#### Detailed Analysis Results")
-                st.dataframe(filtered_data, use_container_width=True)
-                
-                # Show statistics
-                with st.expander("View Detailed Statistics"):
-                    if not filtered_data.empty:
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            st.markdown("**Transaction Patterns**")
-                            summary_rows = filtered_data[filtered_data['Customer Count'] != '']
-                            if not summary_rows.empty:
-                                st.write(f"Total DSAs: {summary_rows['dsa_mobile'].nunique()}")
-                                st.write(f"Total Active Customers: {summary_rows['Customer Count'].sum()}")
-                                st.write(f"Total Tickets Purchased: {summary_rows['Ticket Count'].sum()}")
-                                st.write(f"Total Scans Completed: {summary_rows['Scan To Send Count'].sum()}")
-                        
-                        with col2:
-                            st.markdown("**Match Status**")
-                            if 'match_status' in filtered_data.columns:
-                                match_stats = filtered_data['match_status'].value_counts()
-                                for status, count in match_stats.items():
-                                    st.write(f"{status}: {count}")
+                if not filtered_data.empty:
+                    st.markdown("#### Detailed Analysis Results")
+                    st.dataframe(filtered_data, use_container_width=True)
+                    
+                    # Show statistics
+                    with st.expander("View Detailed Statistics"):
+                        if not filtered_data.empty:
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.markdown("**Transaction Patterns**")
+                                summary_rows = filtered_data[filtered_data['Customer Count'] != '']
+                                if not summary_rows.empty:
+                                    st.write(f"Total DSAs: {summary_rows['dsa_mobile'].nunique()}")
+                                    st.write(f"Total Active Customers: {summary_rows['Customer Count'].sum()}")
+                                    st.write(f"Total Tickets Purchased: {summary_rows['Ticket Count'].sum()}")
+                                    st.write(f"Total Scans Completed: {summary_rows['Scan To Send Count'].sum()}")
+                            
+                            with col2:
+                                st.markdown("**Match Status**")
+                                if 'match_status' in filtered_data.columns:
+                                    match_stats = filtered_data['match_status'].value_counts()
+                                    for status, count in match_stats.items():
+                                        st.write(f"{status}: {count}")
+                else:
+                    st.info("No data available for Report 2 with current filters.")
+            else:
+                st.info("Report 2 data not available or empty.")
         
         with tab3:
             st.markdown('<div class="sub-header">Data Visualizations</div>', unsafe_allow_html=True)
@@ -824,25 +1026,25 @@ def main():
             if st.session_state.report_1_data:
                 fig1_r1, fig2_r1 = create_visualizations(st.session_state.report_1_data, "report_1")
                 
-                if fig1_r1 and fig2_r1:
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.plotly_chart(fig1_r1, use_container_width=True)
-                    with col2:
-                        st.plotly_chart(fig2_r1, use_container_width=True)
+                if fig1_r1:
+                    st.plotly_chart(fig1_r1, use_container_width=True)
+                if fig2_r1:
+                    st.plotly_chart(fig2_r1, use_container_width=True)
+                if not fig1_r1 and not fig2_r1:
+                    st.info("No visualization data available for Report 1.")
             
-            if st.session_state.report_2_data and not st.session_state.report_2_data["report_2_results"].empty:
+            if st.session_state.report_2_data and "report_2_results" in st.session_state.report_2_data and not st.session_state.report_2_data["report_2_results"].empty:
                 fig1_r2, fig2_r2 = create_visualizations(st.session_state.report_2_data, "report_2")
                 
-                if fig1_r2 and fig2_r2:
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.plotly_chart(fig1_r2, use_container_width=True)
-                    with col2:
-                        st.plotly_chart(fig2_r2, use_container_width=True)
+                if fig1_r2:
+                    st.plotly_chart(fig1_r2, use_container_width=True)
+                if fig2_r2:
+                    st.plotly_chart(fig2_r2, use_container_width=True)
+                if not fig1_r2 and not fig2_r2:
+                    st.info("No visualization data available for Report 2.")
         
         with tab4:
-            st.markdown('<div class="sub-header">Download Reports</div>', unsafe_allow_html=True)
+            st.markdown('<div class="sub-header">Download Reports (GMD)</div>', unsafe_allow_html=True)
             
             col1, col2 = st.columns(2)
             
@@ -860,16 +1062,17 @@ def main():
                         )
                     
                     # CSV download
-                    csv_1 = st.session_state.report_1_data["dsa_summary"].to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="📥 Download Summary (CSV)",
-                        data=csv_1,
-                        file_name=f"DSA_Summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv"
-                    )
+                    if "dsa_summary" in st.session_state.report_1_data and not st.session_state.report_1_data["dsa_summary"].empty:
+                        csv_1 = st.session_state.report_1_data["dsa_summary"].to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="📥 Download Summary (CSV)",
+                            data=csv_1,
+                            file_name=f"DSA_Summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv"
+                        )
             
             with col2:
-                if st.session_state.report_2_data and not st.session_state.report_2_data["report_2_results"].empty:
+                if st.session_state.report_2_data and "report_2_results" in st.session_state.report_2_data and not st.session_state.report_2_data["report_2_results"].empty:
                     st.markdown("#### Report 2: Detailed Analysis")
                     excel_file_2 = create_excel_download(st.session_state.report_2_data, "report_2")
                     
@@ -892,7 +1095,7 @@ def main():
     
     else:
         # Show instructions when no data is uploaded
-        st.info("👋 Welcome to the DSA Performance Dashboard!")
+        st.info("👋 Welcome to the DSA Performance Dashboard (GMD)!")
         st.markdown("""
         ### To get started:
         1. **Upload your data files** using the sidebar on the left
@@ -910,6 +1113,7 @@ def main():
         - 📊 **Data visualizations** for insights
         - 📥 **Download reports** in Excel or CSV format
         - 🔄 **Real-time calculations** based on your filters
+        - 💰 **GMD currency** support for all financial metrics
         
         ### Sample Data Format:
         The dashboard is designed to work with the sample data formats you provided:
@@ -925,8 +1129,8 @@ def main():
             with col1:
                 st.markdown("**Deposit Data Columns:**")
                 st.write("- User Identifier")
-                st.write("- Transaction Type")
-                st.write("- Amount")
+                st.write("- Transaction Type (CR/DR)")
+                st.write("- Amount (GMD)")
                 st.write("- Created By")
                 st.write("- Full Name")
             
