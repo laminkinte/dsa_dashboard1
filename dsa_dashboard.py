@@ -385,19 +385,28 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         if original_onboarded_count > 0:
             st.info(f"Valid onboarded customers with DSA: {original_onboarded_count} → {len(onboarding_df)}")
         
-        # Aggregate ticket data
-        ticket_agg = ticket_df.groupby("customer_mobile").agg(
-            ticket_amount=("ticket_amount", "sum"),
-            ticket_count=("ticket_amount", lambda x: (x > 0).sum())
-        ).reset_index()
-        ticket_agg["bought_ticket"] = (ticket_agg["ticket_amount"] > 0).astype(int)
+        # CRITICAL: Aggregate ticket data - only count customers with POSITIVE ticket amounts
+        if not ticket_df.empty:
+            # Group by customer and sum ticket amounts
+            ticket_agg = ticket_df.groupby("customer_mobile").agg(
+                ticket_amount=("ticket_amount", "sum"),
+                ticket_count=("ticket_amount", lambda x: (x > 0).sum())
+            ).reset_index()
+            # Only mark as bought_ticket if they have a positive ticket amount
+            ticket_agg["bought_ticket"] = (ticket_agg["ticket_amount"] > 0).astype(int)
+        else:
+            ticket_agg = pd.DataFrame(columns=["customer_mobile", "ticket_amount", "ticket_count", "bought_ticket"])
         
-        # Aggregate scan data
-        scan_summary = scan_df.groupby("customer_mobile").agg(
-            scan_amount=("scan_amount", "sum"),
-            scan_count=("scan_amount", "count")
-        ).reset_index()
-        scan_summary["did_scan"] = (scan_summary["scan_amount"] > 0).astype(int)
+        # CRITICAL: Aggregate scan data - only count customers with POSITIVE scan amounts
+        if not scan_df.empty:
+            scan_summary = scan_df.groupby("customer_mobile").agg(
+                scan_amount=("scan_amount", "sum"),
+                scan_count=("scan_amount", "count")
+            ).reset_index()
+            # Only mark as did_scan if they have a positive scan amount
+            scan_summary["did_scan"] = (scan_summary["scan_amount"] > 0).astype(int)
+        else:
+            scan_summary = pd.DataFrame(columns=["customer_mobile", "scan_amount", "scan_count", "did_scan"])
         
         # Get unique depositors from CR transactions
         unique_depositors = deposit_df[["customer_mobile"]].drop_duplicates().assign(deposited=1)
@@ -428,20 +437,42 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         onboarded_customers["ticket_amount"] = onboarded_customers["ticket_amount"].fillna(0)
         onboarded_customers["scan_amount"] = onboarded_customers["scan_amount"].fillna(0)
         
+        # CRITICAL: Debug - show sample data to verify
+        st.info("Sample data check (first 5 customers):")
+        st.dataframe(onboarded_customers.head())
+        
         # CRITICAL: Create qualified customers table - EXACTLY as in sample
         # A customer qualifies if:
         # 1. They were onboarded by a DSA (dsa_mobile exists)
         # 2. They deposited (deposited == 1)
-        # 3. They either bought a ticket (bought_ticket == 1) OR did a scan (did_scan == 1)
+        # 3. They either bought a ticket (bought_ticket == 1 AND ticket_amount > 0) 
+        #    OR did a scan (did_scan == 1 AND scan_amount > 0)
         qualified_customers = onboarded_customers[
-            (onboarded_customers["deposited"] >= 1) & 
-            ((onboarded_customers["bought_ticket"] >=1) | (onboarded_customers["did_scan"] >= 1))
+            (onboarded_customers["deposited"] == 1) & 
+            (
+                (onboarded_customers["bought_ticket"] == 1) | 
+                (onboarded_customers["did_scan"] == 1)
+            )
         ].copy()
+        
+        # CRITICAL: Additional validation - ensure ticket/scan amounts are positive
+        # Remove customers where ticket_amount = 0 AND scan_amount = 0
+        qualified_customers = qualified_customers[
+            (qualified_customers["ticket_amount"] > 0) | 
+            (qualified_customers["scan_amount"] > 0)
+        ]
         
         # CRITICAL: Additional validation - ensure DSA mobile is not empty
         qualified_customers = qualified_customers[qualified_customers["dsa_mobile"].astype(str).str.strip() != ""]
         
-        st.info(f"Total qualified customers (deposit + ticket/scan): {len(qualified_customers)}")
+        st.info(f"""
+        Data Check:
+        - Total onboarded customers: {len(onboarded_customers)}
+        - Customers who deposited: {onboarded_customers['deposited'].sum()}
+        - Customers with ticket amount > 0: {(onboarded_customers['ticket_amount'] > 0).sum()}
+        - Customers with scan amount > 0: {(onboarded_customers['scan_amount'] > 0).sum()}
+        - Total qualified customers (deposit + ticket/scan with positive amount): {len(qualified_customers)}
+        """)
         
         # Sort and add running counts - EXACT FORMAT as sample
         if not qualified_customers.empty:
@@ -549,10 +580,13 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         ✅ Report 1 Processing Complete:
         - Total Onboarded Customers: {len(onboarded_customers)}
         - Total Depositors: {onboarded_customers['deposited'].sum()}
-        - Total Ticket Buyers: {onboarded_customers['bought_ticket'].sum()}
-        - Total Scanners: {onboarded_customers['did_scan'].sum()}
-        - **Qualified Customers**: {len(qualified_customers)} (Deposit + Ticket/Scan)
+        - Total Ticket Buyers (with amount > 0): {(onboarded_customers['ticket_amount'] > 0).sum()}
+        - Total Scanners (with amount > 0): {(onboarded_customers['scan_amount'] > 0).sum()}
+        - **Qualified Customers**: {len(qualified_customers)} (Deposit + Ticket/Scan with positive amount)
         - Total DSAs with qualified customers: {qualified_customers_final['dsa_mobile'].nunique() if not qualified_customers_final.empty else 0}
+        
+        💰 Payment Summary:
+        - Total Payment (GMD): {len(qualified_customers) * 40:,}
         """)
         
         return {
