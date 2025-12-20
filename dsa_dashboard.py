@@ -285,20 +285,37 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
             if deposit_count_col:
                 conversion_df = conversion_df.rename(columns={deposit_count_col: "deposit_count"})
         
-        # Clean ticket customer column
-        ticket_customer_col = find_column(ticket_df, ["created_by", "user_id", "User Identifier", "customer_mobile", "Customer Mobile", "Mobile"])
+        # CRITICAL: Clean ticket customer column - Look for customer identifier in ticket data
+        ticket_customer_col = None
         
-        if ticket_customer_col is None:
-            st.error(f"No suitable customer column found in Ticket data")
-            return None
+        # First, check if we have the standard column names from your data
+        if "User Identifier" in ticket_df.columns:
+            ticket_df = ticket_df.rename(columns={"User Identifier": "customer_mobile"})
+            ticket_customer_col = "customer_mobile"
+        elif "user_id" in ticket_df.columns:
+            ticket_df = ticket_df.rename(columns={"user_id": "customer_mobile"})
+            ticket_customer_col = "customer_mobile"
+        elif "Created By" in ticket_df.columns:
+            ticket_df = ticket_df.rename(columns={"Created By": "customer_mobile"})
+            ticket_customer_col = "customer_mobile"
+        elif "created_by" in ticket_df.columns:
+            ticket_df = ticket_df.rename(columns={"created_by": "customer_mobile"})
+            ticket_customer_col = "customer_mobile"
+        else:
+            # Try to find any customer column
+            ticket_customer_col = find_column(ticket_df, ["User Identifier", "user_id", "Created By", "created_by", "customer_mobile", "Customer Mobile", "Mobile"])
+            if ticket_customer_col:
+                ticket_df = ticket_df.rename(columns={ticket_customer_col: "customer_mobile"})
+                ticket_customer_col = "customer_mobile"
+            else:
+                st.error(f"No suitable customer column found in Ticket data. Available columns: {list(ticket_df.columns)}")
+                return None
         
-        ticket_df = ticket_df.rename(columns={ticket_customer_col: "customer_mobile"})
-        
-        # Clean scan customer column
+        # CRITICAL: Clean scan customer column
         scan_customer_col = find_column(scan_df, ['Created By', 'Customer Mobile', 'Mobile', 'User Identifier', 'user_id', 'customer_mobile'])
         
         if scan_customer_col is None:
-            st.error(f"No suitable customer column found in Scan data")
+            st.error(f"No suitable customer column found in Scan data. Available columns: {list(scan_df.columns)}")
             return None
         
         scan_df = scan_df.rename(columns={scan_customer_col: "customer_mobile"})
@@ -324,52 +341,54 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
             if original_deposit_count > 0:
                 st.info(f"Filtered deposit data: {original_deposit_count} → {len(deposit_df)} CR transactions")
         
-        # CRITICAL: Identify ticket purchase transactions (DR - Debit)
-        ticket_tx_type_col = find_column(ticket_df, ["transaction_type", "Transaction Type", "TransactionType", "Type"])
-        if ticket_tx_type_col and "transaction_type" not in ticket_df.columns:
-            ticket_df = ticket_df.rename(columns={ticket_tx_type_col: "transaction_type"})
-        
-        # Filter for only ticket purchase transactions (DR)
-        if "transaction_type" in ticket_df.columns:
-            ticket_df["transaction_type"] = safe_str_access(ticket_df["transaction_type"])
-            # Filter for DR (Debit/Ticket Purchase) transactions only
+        # CRITICAL: Clean and filter ticket data
+        # 1. Filter for Customer entity only (not Merchant)
+        if "Entity Name" in ticket_df.columns:
+            ticket_df["Entity Name"] = safe_str_access(ticket_df["Entity Name"])
             original_ticket_count = len(ticket_df)
-            ticket_df = ticket_df[ticket_df["transaction_type"].str.upper().isin(["DR", "TICKET", "DEBIT", "D"])]
-            if original_ticket_count > 0:
-                st.info(f"Filtered ticket data: {original_ticket_count} → {len(ticket_df)} DR transactions")
+            ticket_df = ticket_df[ticket_df["Entity Name"].str.lower() == "customer"]
+            st.info(f"Filtered ticket data (Customer only): {original_ticket_count} → {len(ticket_df)}")
         
-        # CRITICAL: Identify scan transactions (DR - Debit)
-        scan_tx_type_col = find_column(scan_df, ["transaction_type", "Transaction Type", "TransactionType", "Type"])
-        if scan_tx_type_col and "transaction_type" not in scan_df.columns:
-            scan_df = scan_df.rename(columns={scan_tx_type_col: "transaction_type"})
+        # 2. Filter for DR transactions only (ticket purchases)
+        if "Transaction Type" in ticket_df.columns:
+            ticket_df["Transaction Type"] = safe_str_access(ticket_df["Transaction Type"])
+            original_ticket_count = len(ticket_df)
+            ticket_df = ticket_df[ticket_df["Transaction Type"].str.upper().isin(["DR", "DEBIT", "D"])]
+            st.info(f"Filtered ticket data (DR only): {original_ticket_count} → {len(ticket_df)}")
+        elif "transaction_type" in ticket_df.columns:
+            ticket_df["transaction_type"] = safe_str_access(ticket_df["transaction_type"])
+            original_ticket_count = len(ticket_df)
+            ticket_df = ticket_df[ticket_df["transaction_type"].str.upper().isin(["DR", "DEBIT", "D"])]
+            st.info(f"Filtered ticket data (DR only): {original_ticket_count} → {len(ticket_df)}")
         
-        # Filter for only scan-to-send transactions (DR)
-        if "transaction_type" in scan_df.columns:
-            scan_df["transaction_type"] = safe_str_access(scan_df["transaction_type"])
-            # Filter for DR (Debit/Scan) transactions only
-            original_scan_count = len(scan_df)
-            scan_df = scan_df[scan_df["transaction_type"].str.upper().isin(["DR", "SCAN", "DEBIT", "D"])]
-            if original_scan_count > 0:
-                st.info(f"Filtered scan data: {original_scan_count} → {len(scan_df)} DR transactions")
-        
-        # Clean numeric columns for ticket data
-        ticket_amount_col = find_column(ticket_df, ["amount", "ticket_amount", "Amount", "transaction_amount"])
-        if ticket_amount_col:
-            ticket_df["ticket_amount"] = ticket_df[ticket_amount_col].apply(clean_currency_amount)
-        elif "ticket_amount" not in ticket_df.columns:
+        # CRITICAL: Clean numeric columns for ticket data
+        if "Amount" in ticket_df.columns:
+            ticket_df["ticket_amount"] = ticket_df["Amount"].apply(clean_currency_amount)
+        elif "amount" in ticket_df.columns:
+            ticket_df["ticket_amount"] = ticket_df["amount"].apply(clean_currency_amount)
+        else:
             ticket_df["ticket_amount"] = 0
         
-        # Clean numeric columns for scan data
-        scan_amount_col = find_column(scan_df, ["Amount", "scan_amount", "amount", "transaction_amount"])
-        if scan_amount_col:
-            scan_df["scan_amount"] = scan_df[scan_amount_col].apply(clean_currency_amount)
-        elif "scan_amount" not in scan_df.columns:
-            scan_df["scan_amount"] = 0
+        # CRITICAL: Clean scan data
+        if "Transaction Type" in scan_df.columns:
+            scan_df["Transaction Type"] = safe_str_access(scan_df["Transaction Type"])
+            original_scan_count = len(scan_df)
+            # Filter for DR transactions only (scan to send)
+            scan_df = scan_df[scan_df["Transaction Type"].str.upper().isin(["DR", "DEBIT", "D"])]
+            st.info(f"Filtered scan data (DR only): {original_scan_count} → {len(scan_df)}")
+        elif "transaction_type" in scan_df.columns:
+            scan_df["transaction_type"] = safe_str_access(scan_df["transaction_type"])
+            original_scan_count = len(scan_df)
+            scan_df = scan_df[scan_df["transaction_type"].str.upper().isin(["DR", "DEBIT", "D"])]
+            st.info(f"Filtered scan data (DR only): {original_scan_count} → {len(scan_df)}")
         
-        # Filter ticket data for customers only
-        if "entity_name" in ticket_df.columns:
-            ticket_df["entity_name"] = safe_str_access(ticket_df["entity_name"])
-            ticket_df = ticket_df[ticket_df["entity_name"].str.lower() == "customer"]
+        # Clean numeric columns for scan data
+        if "Amount" in scan_df.columns:
+            scan_df["scan_amount"] = scan_df["Amount"].apply(clean_currency_amount)
+        elif "amount" in scan_df.columns:
+            scan_df["scan_amount"] = scan_df["amount"].apply(clean_currency_amount)
+        else:
+            scan_df["scan_amount"] = 0
         
         # CRITICAL: Validate we have required columns before proceeding
         required_onboarding_cols = ["dsa_mobile", "customer_mobile"]
@@ -387,6 +406,10 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         
         # CRITICAL: Aggregate ticket data - only count customers with POSITIVE ticket amounts
         if not ticket_df.empty:
+            # Debug: Show sample ticket data
+            st.info(f"Sample ticket data (first 5 rows):")
+            st.dataframe(ticket_df[["customer_mobile", "ticket_amount", "Transaction Type", "Entity Name"]].head() if "Transaction Type" in ticket_df.columns else ticket_df[["customer_mobile", "ticket_amount"]].head())
+            
             # Group by customer and sum ticket amounts
             ticket_agg = ticket_df.groupby("customer_mobile").agg(
                 ticket_amount=("ticket_amount", "sum"),
@@ -394,26 +417,38 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
             ).reset_index()
             # Only mark as bought_ticket if they have a positive ticket amount
             ticket_agg["bought_ticket"] = (ticket_agg["ticket_amount"] > 0).astype(int)
+            
+            st.info(f"Ticket aggregation: {len(ticket_agg)} customers with ticket purchases")
         else:
             ticket_agg = pd.DataFrame(columns=["customer_mobile", "ticket_amount", "ticket_count", "bought_ticket"])
+            st.info("No ticket data found after filtering")
         
         # CRITICAL: Aggregate scan data - only count customers with POSITIVE scan amounts
         if not scan_df.empty:
+            # Debug: Show sample scan data
+            st.info(f"Sample scan data (first 5 rows):")
+            st.dataframe(scan_df[["customer_mobile", "scan_amount", "Transaction Type"]].head() if "Transaction Type" in scan_df.columns else scan_df[["customer_mobile", "scan_amount"]].head())
+            
             scan_summary = scan_df.groupby("customer_mobile").agg(
                 scan_amount=("scan_amount", "sum"),
                 scan_count=("scan_amount", "count")
             ).reset_index()
             # Only mark as did_scan if they have a positive scan amount
             scan_summary["did_scan"] = (scan_summary["scan_amount"] > 0).astype(int)
+            
+            st.info(f"Scan aggregation: {len(scan_summary)} customers with scan transactions")
         else:
             scan_summary = pd.DataFrame(columns=["customer_mobile", "scan_amount", "scan_count", "did_scan"])
+            st.info("No scan data found after filtering")
         
         # Get unique depositors from CR transactions
         unique_depositors = deposit_df[["customer_mobile"]].drop_duplicates().assign(deposited=1)
+        st.info(f"Unique depositors: {len(unique_depositors)} customers")
         
         # Create onboarded customers table
         onboarded_customers = onboarding_df[["dsa_mobile", "customer_mobile", "full_name"]].copy()
         onboarded_customers = onboarded_customers.drop_duplicates(subset=["customer_mobile"])
+        st.info(f"Onboarded customers: {len(onboarded_customers)} customers")
         
         # Merge all data
         onboarded_customers = onboarded_customers.merge(
@@ -437,9 +472,18 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         onboarded_customers["ticket_amount"] = onboarded_customers["ticket_amount"].fillna(0)
         onboarded_customers["scan_amount"] = onboarded_customers["scan_amount"].fillna(0)
         
-        # CRITICAL: Debug - show sample data to verify
-        st.info("Sample data check (first 5 customers):")
-        st.dataframe(onboarded_customers.head())
+        # CRITICAL: Debug - show sample merged data to verify
+        st.info("Merged data check (first 10 customers):")
+        st.dataframe(onboarded_customers.head(10))
+        
+        # Show summary statistics
+        st.info("Data Summary:")
+        st.write(f"- Total onboarded customers: {len(onboarded_customers)}")
+        st.write(f"- Customers who deposited: {onboarded_customers['deposited'].sum()}")
+        st.write(f"- Customers with ticket amount > 0: {(onboarded_customers['ticket_amount'] > 0).sum()}")
+        st.write(f"- Customers with scan amount > 0: {(onboarded_customers['scan_amount'] > 0).sum()}")
+        st.write(f"- Customers who bought ticket (bought_ticket=1): {onboarded_customers['bought_ticket'].sum()}")
+        st.write(f"- Customers who did scan (did_scan=1): {onboarded_customers['did_scan'].sum()}")
         
         # CRITICAL: Create qualified customers table - EXACTLY as in sample
         # A customer qualifies if:
@@ -447,16 +491,18 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         # 2. They deposited (deposited == 1)
         # 3. They either bought a ticket (bought_ticket == 1 AND ticket_amount > 0) 
         #    OR did a scan (did_scan == 1 AND scan_amount > 0)
-        qualified_customers = onboarded_customers[
-            (onboarded_customers["deposited"] == 1) & 
-            (
-                (onboarded_customers["bought_ticket"] == 1) | 
-                (onboarded_customers["did_scan"] == 1)
-            )
+        
+        # First filter: deposited = 1
+        deposited_customers = onboarded_customers[onboarded_customers["deposited"] == 1].copy()
+        st.info(f"Customers who deposited: {len(deposited_customers)}")
+        
+        # Second filter: either bought ticket OR did scan
+        qualified_customers = deposited_customers[
+            (deposited_customers["bought_ticket"] == 1) | 
+            (deposited_customers["did_scan"] == 1)
         ].copy()
         
-        # CRITICAL: Additional validation - ensure ticket/scan amounts are positive
-        # Remove customers where ticket_amount = 0 AND scan_amount = 0
+        # Third filter: ensure positive amounts
         qualified_customers = qualified_customers[
             (qualified_customers["ticket_amount"] > 0) | 
             (qualified_customers["scan_amount"] > 0)
@@ -466,12 +512,13 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         qualified_customers = qualified_customers[qualified_customers["dsa_mobile"].astype(str).str.strip() != ""]
         
         st.info(f"""
-        Data Check:
-        - Total onboarded customers: {len(onboarded_customers)}
-        - Customers who deposited: {onboarded_customers['deposited'].sum()}
-        - Customers with ticket amount > 0: {(onboarded_customers['ticket_amount'] > 0).sum()}
-        - Customers with scan amount > 0: {(onboarded_customers['scan_amount'] > 0).sum()}
-        - Total qualified customers (deposit + ticket/scan with positive amount): {len(qualified_customers)}
+        Qualification Check:
+        - Customers who deposited: {len(deposited_customers)}
+        - Customers who deposited AND (bought ticket OR did scan): {len(qualified_customers)}
+        - Breakdown:
+          * Ticket only: {len(qualified_customers[(qualified_customers['bought_ticket'] == 1) & (qualified_customers['did_scan'] == 0)])}
+          * Scan only: {len(qualified_customers[(qualified_customers['bought_ticket'] == 0) & (qualified_customers['did_scan'] == 1)])}
+          * Both: {len(qualified_customers[(qualified_customers['bought_ticket'] == 1) & (qualified_customers['did_scan'] == 1)])}
         """)
         
         # Sort and add running counts - EXACT FORMAT as sample
@@ -586,6 +633,7 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         - Total DSAs with qualified customers: {qualified_customers_final['dsa_mobile'].nunique() if not qualified_customers_final.empty else 0}
         
         💰 Payment Summary:
+        - Total Qualified Customers: {len(qualified_customers)}
         - Total Payment (GMD): {len(qualified_customers) * 40:,}
         """)
         
