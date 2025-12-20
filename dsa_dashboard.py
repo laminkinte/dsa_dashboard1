@@ -1117,38 +1117,69 @@ def create_master_excel_report(filtered_report_1, filtered_report_2, filtered_pa
             
             # Report 1 Summary
             if filtered_report_1 and "dsa_summary" in filtered_report_1 and not filtered_report_1["dsa_summary"].empty:
+                total_customers_r1 = 0
+                total_payment_r1 = 0
+                
+                if "Customer_Count" in filtered_report_1["dsa_summary"].columns:
+                    total_customers_r1 = int(filtered_report_1["dsa_summary"]["Customer_Count"].sum())
+                
+                if "qualified_customers" in filtered_report_1 and not filtered_report_1["qualified_customers"].empty:
+                    payment_col = 'Payment (Customer Count *40)'
+                    if payment_col in filtered_report_1["qualified_customers"].columns:
+                        # Get only rows with payment values (first rows per DSA)
+                        payment_rows = filtered_report_1["qualified_customers"][filtered_report_1["qualified_customers"][payment_col] != '']
+                        if not payment_rows.empty:
+                            total_payment_r1 = float(payment_rows[payment_col].sum())
+                
                 summary_data.append({
                     'Report': 'Report 1: DSA Performance',
-                    'Total DSAs': filtered_report_1["dsa_summary"]["dsa_mobile"].nunique(),
-                    'Total Customers': filtered_report_1["dsa_summary"]["Customer_Count"].sum() if "Customer_Count" in filtered_report_1["dsa_summary"].columns else 0,
-                    'Total Payment (GMD)': filtered_report_1["qualified_customers"]["Payment (Customer Count *40)"].sum() if "qualified_customers" in filtered_report_1 and not filtered_report_1["qualified_customers"].empty else 0
+                    'Total DSAs': int(filtered_report_1["dsa_summary"]["dsa_mobile"].nunique()),
+                    'Total Customers': total_customers_r1,
+                    'Total Payment (GMD)': total_payment_r1
                 })
             
             # Report 2 Summary
             if filtered_report_2 and "report_2_results" in filtered_report_2 and not filtered_report_2["report_2_results"].empty:
                 report2_summary_rows = filtered_report_2["report_2_results"][filtered_report_2["report_2_results"]['Customer Count'] != '']
+                
+                total_dsas_r2 = 0
+                total_customers_r2 = 0
+                total_payment_r2 = 0
+                
                 if not report2_summary_rows.empty:
-                    total_customers = pd.to_numeric(report2_summary_rows['Customer Count'], errors='coerce').sum()
-                    total_payment = pd.to_numeric(report2_summary_rows['Payment'], errors='coerce').sum()
-                    summary_data.append({
-                        'Report': 'Report 2: NO ONBOARDING',
-                        'Total DSAs': report2_summary_rows['dsa_mobile'].nunique(),
-                        'Total Customers': total_customers,
-                        'Total Payment (GMD)': total_payment
-                    })
+                    total_dsas_r2 = int(report2_summary_rows['dsa_mobile'].nunique())
+                    total_customers_r2 = int(pd.to_numeric(report2_summary_rows['Customer Count'], errors='coerce').sum())
+                    total_payment_r2 = float(pd.to_numeric(report2_summary_rows['Payment'], errors='coerce').sum())
+                
+                summary_data.append({
+                    'Report': 'Report 2: NO ONBOARDING',
+                    'Total DSAs': total_dsas_r2,
+                    'Total Customers': total_customers_r2,
+                    'Total Payment (GMD)': total_payment_r2
+                })
             
             # Payment Report Summary
             if filtered_payment_report is not None and not filtered_payment_report.empty:
+                total_dsas_pr = len(filtered_payment_report) - 1  # Exclude Total row
+                total_qualified_payment = 0
+                total_not_onboarded_payment = 0
+                total_payable = 0
+                
                 if filtered_payment_report['DSA_Mobile'].iloc[-1] == 'Total':
                     totals_row = filtered_payment_report.iloc[-1]
-                    summary_data.append({
-                        'Report': 'Payment Report',
-                        'Total DSAs': len(filtered_payment_report) - 1,
-                        'Total Qualified Payment': totals_row['Payment for Qualified Customers'],
-                        'Total Not Onboarded Payment': totals_row['Payment for not onboarded Customers'],
-                        'Total Amount Payable': totals_row['Total Amount Payable']
-                    })
+                    total_qualified_payment = float(totals_row['Payment for Qualified Customers'])
+                    total_not_onboarded_payment = float(totals_row['Payment for not onboarded Customers'])
+                    total_payable = float(totals_row['Total Amount Payable'])
+                
+                summary_data.append({
+                    'Report': 'Payment Report',
+                    'Total DSAs': total_dsas_pr,
+                    'Total Qualified Payment': total_qualified_payment,
+                    'Total Not Onboarded Payment': total_not_onboarded_payment,
+                    'Total Amount Payable': total_payable
+                })
             
+            # Create summary DataFrame
             if summary_data:
                 summary_df = pd.DataFrame(summary_data)
                 summary_df.to_excel(writer, index=False, sheet_name="Summary")
@@ -1157,6 +1188,8 @@ def create_master_excel_report(filtered_report_1, filtered_report_2, filtered_pa
         return output
     except Exception as e:
         st.error(f"Error creating master Excel report: {str(e)}")
+        import traceback
+        st.error(f"Traceback: {traceback.format_exc()}")
         return None
 
 def display_metrics(data, report_type):
