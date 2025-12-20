@@ -434,8 +434,8 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         # 2. They deposited (deposited == 1)
         # 3. They either bought a ticket (bought_ticket == 1) OR did a scan (did_scan == 1)
         qualified_customers = onboarded_customers[
-            (onboarded_customers["deposited"] == 1) & 
-            ((onboarded_customers["bought_ticket"] == 1) | (onboarded_customers["did_scan"] == 1))
+            (onboarded_customers["deposited"] >= 1) & 
+            ((onboarded_customers["bought_ticket"] >=1) | (onboarded_customers["did_scan"] >= 1))
         ].copy()
         
         # CRITICAL: Additional validation - ensure DSA mobile is not empty
