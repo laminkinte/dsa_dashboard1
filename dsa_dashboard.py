@@ -310,6 +310,48 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
             if col in df.columns:
                 df[col] = safe_str_access(df[col])
         
+        # CRITICAL: Identify deposit transactions (CR - Credit/Customer Deposits)
+        deposit_tx_type_col = find_column(deposit_df, ["transaction_type", "Transaction Type", "TransactionType", "Type"])
+        if deposit_tx_type_col and "transaction_type" not in deposit_df.columns:
+            deposit_df = deposit_df.rename(columns={deposit_tx_type_col: "transaction_type"})
+        
+        # Filter for only deposit transactions (CR)
+        if "transaction_type" in deposit_df.columns:
+            deposit_df["transaction_type"] = safe_str_access(deposit_df["transaction_type"])
+            # Filter for CR (Credit/Deposit) transactions only
+            original_deposit_count = len(deposit_df)
+            deposit_df = deposit_df[deposit_df["transaction_type"].str.upper().isin(["CR", "DEPOSIT", "C"])]
+            if original_deposit_count > 0:
+                st.info(f"Filtered deposit data: {original_deposit_count} → {len(deposit_df)} CR transactions")
+        
+        # CRITICAL: Identify ticket purchase transactions (DR - Debit)
+        ticket_tx_type_col = find_column(ticket_df, ["transaction_type", "Transaction Type", "TransactionType", "Type"])
+        if ticket_tx_type_col and "transaction_type" not in ticket_df.columns:
+            ticket_df = ticket_df.rename(columns={ticket_tx_type_col: "transaction_type"})
+        
+        # Filter for only ticket purchase transactions (DR)
+        if "transaction_type" in ticket_df.columns:
+            ticket_df["transaction_type"] = safe_str_access(ticket_df["transaction_type"])
+            # Filter for DR (Debit/Ticket Purchase) transactions only
+            original_ticket_count = len(ticket_df)
+            ticket_df = ticket_df[ticket_df["transaction_type"].str.upper().isin(["DR", "TICKET", "DEBIT", "D"])]
+            if original_ticket_count > 0:
+                st.info(f"Filtered ticket data: {original_ticket_count} → {len(ticket_df)} DR transactions")
+        
+        # CRITICAL: Identify scan transactions (DR - Debit)
+        scan_tx_type_col = find_column(scan_df, ["transaction_type", "Transaction Type", "TransactionType", "Type"])
+        if scan_tx_type_col and "transaction_type" not in scan_df.columns:
+            scan_df = scan_df.rename(columns={scan_tx_type_col: "transaction_type"})
+        
+        # Filter for only scan-to-send transactions (DR)
+        if "transaction_type" in scan_df.columns:
+            scan_df["transaction_type"] = safe_str_access(scan_df["transaction_type"])
+            # Filter for DR (Debit/Scan) transactions only
+            original_scan_count = len(scan_df)
+            scan_df = scan_df[scan_df["transaction_type"].str.upper().isin(["DR", "SCAN", "DEBIT", "D"])]
+            if original_scan_count > 0:
+                st.info(f"Filtered scan data: {original_scan_count} → {len(scan_df)} DR transactions")
+        
         # Clean numeric columns for ticket data
         ticket_amount_col = find_column(ticket_df, ["amount", "ticket_amount", "Amount", "transaction_amount"])
         if ticket_amount_col:
@@ -329,6 +371,20 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
             ticket_df["entity_name"] = safe_str_access(ticket_df["entity_name"])
             ticket_df = ticket_df[ticket_df["entity_name"].str.lower() == "customer"]
         
+        # CRITICAL: Validate we have required columns before proceeding
+        required_onboarding_cols = ["dsa_mobile", "customer_mobile"]
+        if not all(col in onboarding_df.columns for col in required_onboarding_cols):
+            st.error(f"Missing required columns in onboarding data: {required_onboarding_cols}")
+            st.error(f"Available columns: {list(onboarding_df.columns)}")
+            return None
+        
+        # CRITICAL: Ensure no null DSA mobile numbers (customers must be onboarded by a DSA)
+        original_onboarded_count = len(onboarding_df)
+        onboarding_df = onboarding_df.dropna(subset=["dsa_mobile"])
+        onboarding_df = onboarding_df[onboarding_df["dsa_mobile"].astype(str).str.strip() != ""]
+        if original_onboarded_count > 0:
+            st.info(f"Valid onboarded customers with DSA: {original_onboarded_count} → {len(onboarding_df)}")
+        
         # Aggregate ticket data
         ticket_agg = ticket_df.groupby("customer_mobile").agg(
             ticket_amount=("ticket_amount", "sum"),
@@ -343,7 +399,7 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         ).reset_index()
         scan_summary["did_scan"] = (scan_summary["scan_amount"] > 0).astype(int)
         
-        # Get unique depositors
+        # Get unique depositors from CR transactions
         unique_depositors = deposit_df[["customer_mobile"]].drop_duplicates().assign(deposited=1)
         
         # Create onboarded customers table
@@ -365,17 +421,27 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
             how="left"
         )
         
+        # Fill NaN values
         onboarded_customers["bought_ticket"] = onboarded_customers["bought_ticket"].fillna(0).astype(int)
         onboarded_customers["did_scan"] = onboarded_customers["did_scan"].fillna(0).astype(int)
         onboarded_customers["deposited"] = onboarded_customers["deposited"].fillna(0).astype(int)
         onboarded_customers["ticket_amount"] = onboarded_customers["ticket_amount"].fillna(0)
         onboarded_customers["scan_amount"] = onboarded_customers["scan_amount"].fillna(0)
         
-        # Create qualified customers table - EXACTLY as in sample
+        # CRITICAL: Create qualified customers table - EXACTLY as in sample
+        # A customer qualifies if:
+        # 1. They were onboarded by a DSA (dsa_mobile exists)
+        # 2. They deposited (deposited == 1)
+        # 3. They either bought a ticket (bought_ticket == 1) OR did a scan (did_scan == 1)
         qualified_customers = onboarded_customers[
             (onboarded_customers["deposited"] == 1) & 
             ((onboarded_customers["bought_ticket"] == 1) | (onboarded_customers["did_scan"] == 1))
         ].copy()
+        
+        # CRITICAL: Additional validation - ensure DSA mobile is not empty
+        qualified_customers = qualified_customers[qualified_customers["dsa_mobile"].astype(str).str.strip() != ""]
+        
+        st.info(f"Total qualified customers (deposit + ticket/scan): {len(qualified_customers)}")
         
         # Sort and add running counts - EXACT FORMAT as sample
         if not qualified_customers.empty:
@@ -477,6 +543,17 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
                                                    dsa_summary_all["Customer_Count"].replace(0, 1) * 100).round(2)
         dsa_summary_all["Deposit_Conversion_Rate"] = (dsa_summary_all["Customers_who_deposited"] / 
                                                       dsa_summary_all["Customer_Count"].replace(0, 1) * 100).round(2)
+        
+        # CRITICAL: Final validation summary
+        st.success(f"""
+        ✅ Report 1 Processing Complete:
+        - Total Onboarded Customers: {len(onboarded_customers)}
+        - Total Depositors: {onboarded_customers['deposited'].sum()}
+        - Total Ticket Buyers: {onboarded_customers['bought_ticket'].sum()}
+        - Total Scanners: {onboarded_customers['did_scan'].sum()}
+        - **Qualified Customers**: {len(qualified_customers)} (Deposit + Ticket/Scan)
+        - Total DSAs with qualified customers: {qualified_customers_final['dsa_mobile'].nunique() if not qualified_customers_final.empty else 0}
+        """)
         
         return {
             "qualified_customers": qualified_customers_final,  # Using the exact format
@@ -718,7 +795,7 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
             deposit_count = sum(customers[c]['deposit_count'] for c in no_onboarding_customers)
             ticket_count = sum(customers[c]['bought_ticket'] for c in no_onboarding_customers)
             scan_count = sum(customers[c]['did_scan'] for c in no_onboarding_customers)
-            payment = customer_count * 25  # $25 per active customer as in original
+            payment = customer_count * 25  # GMD 25 per customer as in original
             
             # Add summary row for first customer
             first_customer = no_onboarding_customers[0] if no_onboarding_customers else None
