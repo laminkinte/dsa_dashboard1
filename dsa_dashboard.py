@@ -615,11 +615,6 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
         ticket_df = ticket_df.copy()
         scan_df = scan_df.copy()
         
-        # Store original dataframes for debugging
-        original_deposit_df = deposit_df.copy()
-        original_ticket_df = ticket_df.copy()
-        original_scan_df = scan_df.copy()
-        
         # Clean column names consistently
         for df in [onboarding_df, deposit_df, ticket_df, scan_df]:
             df.columns = [str(col).strip() for col in df.columns]
@@ -807,12 +802,12 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
         report1_excluded_customers = set()
         if report_1_qualified_customers is not None and not report_1_qualified_customers.empty:
             # Get all unique customer mobiles from Report 1
-            report1_excluded_customers = set(report_1_qualified_customers['customer_mobile'].astype(str).str.strip().unique())
-            # Also clean them for comparison
-            report1_excluded_customers_clean = {clean_mobile_for_report2(mobile) for mobile in report1_excluded_customers}
+            report1_customers = set(report_1_qualified_customers['customer_mobile'].astype(str).str.strip().unique())
+            # Clean them for comparison
+            report1_excluded_customers = {clean_mobile_for_report2(mobile) for mobile in report1_customers}
             # Remove None values
-            report1_excluded_customers_clean = {mobile for mobile in report1_excluded_customers_clean if mobile}
-            st.info(f"Will exclude {len(report1_excluded_customers_clean)} customers who are already in Report 1")
+            report1_excluded_customers = {mobile for mobile in report1_excluded_customers if mobile}
+            st.info(f"Will exclude {len(report1_excluded_customers)} customers who are already in Report 1")
         
         # 5. GET CUSTOMER NAMES FROM ALL SOURCES
         customer_names = {}
@@ -898,7 +893,7 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
                 continue
             
             # Skip if customer is already in Report 1
-            if customer_mobile in report1_excluded_customers_clean:
+            if customer_mobile in report1_excluded_customers:
                 continue
             
             # Initialize DSA entry if not exists
@@ -1085,7 +1080,7 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
             "ticket_df": ticket_df,    # Add cleaned ticket dataframe  
             "scan_df": scan_df,        # Add cleaned scan dataframe
             "onboarding_df": onboarding_df,  # Add cleaned onboarding dataframe
-            "report1_excluded_customers": report1_excluded_customers_clean  # Add excluded customers
+            "report1_excluded_customers": report1_excluded_customers  # Add excluded customers
         }
         
     except Exception as e:
@@ -1093,6 +1088,44 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
         import traceback
         st.error(f"Traceback: {traceback.format_exc()}")
         return None
+
+def check_duplicate_customers_between_reports(report_1_data, report_2_data):
+    """Check if any customers appear in both Report 1 and Report 2"""
+    if not report_1_data or not report_2_data:
+        return
+    
+    if "qualified_customers" not in report_1_data or "report_2_results" not in report_2_data:
+        return
+    
+    report1_customers = set(report_1_data["qualified_customers"]['customer_mobile'].astype(str).str.strip().unique())
+    report2_customers = set(report_2_data["report_2_results"]['customer_mobile'].astype(str).str.strip().unique())
+    
+    # Clean mobile numbers for comparison
+    def clean_duplicate_mobile(mobile):
+        if pd.isna(mobile):
+            return None
+        mobile_str = str(mobile)
+        mobile_clean = ''.join(filter(str.isdigit, mobile_str))
+        if len(mobile_clean) >= 7:
+            return mobile_clean[-7:]
+        return mobile_clean
+    
+    report1_customers_clean = {clean_duplicate_mobile(mobile) for mobile in report1_customers}
+    report2_customers_clean = {clean_duplicate_mobile(mobile) for mobile in report2_customers}
+    
+    # Remove None values
+    report1_customers_clean = {mobile for mobile in report1_customers_clean if mobile}
+    report2_customers_clean = {mobile for mobile in report2_customers_clean if mobile}
+    
+    duplicates = report1_customers_clean.intersection(report2_customers_clean)
+    
+    if duplicates:
+        st.warning(f"⚠️ Found {len(duplicates)} customers appearing in BOTH Report 1 and Report 2!")
+        st.write(f"Duplicate customers: {list(duplicates)[:10]}")  # Show first 10
+        st.write("These customers should only appear in Report 1 (qualified customers).")
+    else:
+        st.success("✓ No duplicate customers found between Report 1 and Report 2.")
+
 def generate_payment_report(report_1_data, report_2_data):
     """Generate Payment report combining earnings from Report 1 and Report 2"""
     try:
@@ -1666,37 +1699,6 @@ def create_visualizations(data, report_type):
     else:
         return None, None
 
-def debug_report_2_missing_customers(report_2_data, deposit_df, ticket_df, scan_df):
-    """Debug function to identify why customers are being missed in Report 2"""
-    if not report_2_data or "report_2_results" not in report_2_data:
-        return
-    
-    results_df = report_2_data["report_2_results"]
-    
-    # Get all unique customers from deposit data
-    all_deposit_customers = set(deposit_df['customer_mobile_clean'].dropna().unique())
-    
-    # Get customers in report
-    report_customers = set(results_df['customer_mobile'].dropna().unique())
-    
-    # Find missing customers
-    missing_customers = all_deposit_customers - report_customers
-    
-    if missing_customers:
-        st.warning(f"Found {len(missing_customers)} customers in deposit data but not in Report 2")
-        
-        # Sample some missing customers to debug
-        sample_missing = list(missing_customers)[:5]
-        st.write("Sample missing customers:", sample_missing)
-        
-        # Check why they're missing
-        for customer in sample_missing:
-            # Check if they have ticket or scan activity
-            has_ticket = customer in set(ticket_df['customer_mobile_clean'].dropna().unique())
-            has_scan = customer in set(scan_df['customer_mobile_clean'].dropna().unique())
-            
-            st.write(f"Customer {customer}: Ticket={has_ticket}, Scan={has_scan}")
-
 # Main application
 def main():
     # Sidebar for file uploads
@@ -1740,19 +1742,25 @@ def main():
                     st.warning("Report 1 processing completed with warnings")
             
             with st.spinner("Processing Report 2..."):
-                report_2_data = process_report_2(onboarding_df, deposit_df, ticket_df, scan_df)
+                # Get Report 1 qualified customers if available
+                report_1_qualified = None
+                if st.session_state.report_1_data and "qualified_customers" in st.session_state.report_1_data:
+                    report_1_qualified = st.session_state.report_1_data["qualified_customers"]
+                
+                report_2_data = process_report_2(
+                    onboarding_df, 
+                    deposit_df, 
+                    ticket_df, 
+                    scan_df,
+                    report_1_qualified_customers=report_1_qualified
+                )
+                
                 if report_2_data:
                     st.session_state.report_2_data = report_2_data
                     st.success("✓ Report 2 processed successfully!")
                     
-                    # Debug: Check for missing customers
-                    if 'deposit_df' in locals():
-                        debug_report_2_missing_customers(
-                            report_2_data, 
-                            report_2_data.get("deposit_df", deposit_df), 
-                            report_2_data.get("ticket_df", ticket_df), 
-                            report_2_data.get("scan_df", scan_df)
-                        )
+                    # Check for duplicate customers
+                    check_duplicate_customers_between_reports(st.session_state.report_1_data, st.session_state.report_2_data)
                 else:
                     st.warning("Report 2 processing completed with warnings")
             
@@ -1809,13 +1817,21 @@ def main():
                 )
                 
                 # Reprocess Report 2 with date filters
+                # Get Report 1 qualified customers if available
+                report_1_qualified = None
+                if filtered_report_1 and "qualified_customers" in filtered_report_1:
+                    report_1_qualified = filtered_report_1["qualified_customers"]
+                elif st.session_state.report_1_data and "qualified_customers" in st.session_state.report_1_data:
+                    report_1_qualified = st.session_state.report_1_data["qualified_customers"]
+                
                 filtered_report_2 = process_report_2(
                     st.session_state.uploaded_files["onboarding"],
                     st.session_state.uploaded_files["deposit"],
                     st.session_state.uploaded_files["ticket"],
                     st.session_state.uploaded_files["scan"],
                     start_date=filters["start_date"],
-                    end_date=filters["end_date"]
+                    end_date=filters["end_date"],
+                    report_1_qualified_customers=report_1_qualified
                 )
                 
                 # Apply additional filters (DSA, min customers, min payment)
