@@ -604,7 +604,7 @@ def process_report_1(onboarding_df, ticket_df, conversion_df, deposit_df, scan_d
         st.error(f"Traceback: {traceback.format_exc()}")
         return None
 
-def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=None, end_date=None):
+def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=None, end_date=None, report_1_qualified_customers=None):
     """Process data for Report 2 - ONLY NO ONBOARDING customers with exact sample format"""
     try:
         st.info("Processing Report 2: Analyzing NO ONBOARDING customers...")
@@ -803,7 +803,18 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
         else:
             st.warning(f"Cannot find required columns in onboarding data. Columns: {list(onboarding_df.columns)}")
         
-        # 4. GET CUSTOMER NAMES FROM ALL SOURCES
+        # 4. GET REPORT 1 QUALIFIED CUSTOMERS (to exclude them from Report 2)
+        report1_excluded_customers = set()
+        if report_1_qualified_customers is not None and not report_1_qualified_customers.empty:
+            # Get all unique customer mobiles from Report 1
+            report1_excluded_customers = set(report_1_qualified_customers['customer_mobile'].astype(str).str.strip().unique())
+            # Also clean them for comparison
+            report1_excluded_customers_clean = {clean_mobile_for_report2(mobile) for mobile in report1_excluded_customers}
+            # Remove None values
+            report1_excluded_customers_clean = {mobile for mobile in report1_excluded_customers_clean if mobile}
+            st.info(f"Will exclude {len(report1_excluded_customers_clean)} customers who are already in Report 1")
+        
+        # 5. GET CUSTOMER NAMES FROM ALL SOURCES
         customer_names = {}
         
         # Get names from deposit data
@@ -821,7 +832,7 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
                 if customer_mobile and pd.notna(name) and str(name).strip():
                     customer_names[customer_mobile] = str(name).strip()
         
-        # 5. IDENTIFY CUSTOMERS WITH DEPOSIT + TICKET/SCAN ACTIVITY
+        # 6. IDENTIFY CUSTOMERS WITH DEPOSIT + TICKET/SCAN ACTIVITY
         # Find ticket and scan customer columns
         ticket_customer_col = None
         scan_customer_col = None
@@ -874,7 +885,7 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
                 scan_df = scan_df[scan_df[scan_tx_col].isin(['DR', 'DEBIT', 'D', 'CR'])]
                 st.info(f"Scan data filtered to {len(scan_df)} DR transactions")
         
-        # 6. CREATE DSA-CUSTOMER ANALYSIS
+        # 7. CREATE DSA-CUSTOMER ANALYSIS
         dsa_customers = {}
         
         # Process each deposit to identify DSA-customer relationships
@@ -884,6 +895,10 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
             
             # Skip if customer or DSA is missing, or if they're the same
             if not customer_mobile or not dsa_mobile or customer_mobile == dsa_mobile:
+                continue
+            
+            # Skip if customer is already in Report 1
+            if customer_mobile in report1_excluded_customers_clean:
                 continue
             
             # Initialize DSA entry if not exists
@@ -904,9 +919,9 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
             # Increment deposit count
             dsa_customers[dsa_mobile][customer_mobile]['deposit_count'] += 1
         
-        st.info(f"Found {len(dsa_customers)} DSAs with {sum(len(customers) for customers in dsa_customers.values())} unique customers in deposit data")
+        st.info(f"Found {len(dsa_customers)} DSAs with {sum(len(customers) for customers in dsa_customers.values())} unique customers in deposit data (excluding Report 1 customers)")
         
-        # 7. CHECK TICKET PURCHASES
+        # 8. CHECK TICKET PURCHASES
         if ticket_customer_col and not ticket_df.empty:
             ticket_df = ticket_df.dropna(subset=['customer_mobile_clean'])
             ticket_customers = set(ticket_df['customer_mobile_clean'].unique())
@@ -918,7 +933,7 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
                         customer_tickets = ticket_df[ticket_df['customer_mobile_clean'] == customer_mobile]
                         dsa_customers[dsa_mobile][customer_mobile]['bought_ticket'] = len(customer_tickets)
         
-        # 8. CHECK SCAN TRANSACTIONS
+        # 9. CHECK SCAN TRANSACTIONS
         if scan_customer_col and not scan_df.empty:
             scan_df = scan_df.dropna(subset=['customer_mobile_clean'])
             scan_customers = set(scan_df['customer_mobile_clean'].unique())
@@ -930,7 +945,7 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
                         customer_scans = scan_df[scan_df['customer_mobile_clean'] == customer_mobile]
                         dsa_customers[dsa_mobile][customer_mobile]['did_scan'] = len(customer_scans)
         
-        # 9. UPDATE MATCH STATUS
+        # 10. UPDATE MATCH STATUS
         for dsa_mobile, customers in dsa_customers.items():
             for customer_mobile, customer_data in customers.items():
                 onboarded_by = customer_data['onboarded_by']
@@ -941,11 +956,12 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
                 else:
                     customer_data['match_status'] = 'MISMATCH'
         
-        # 10. CREATE FORMATTED OUTPUT - ONLY NO ONBOARDING CUSTOMERS
+        # 11. CREATE FORMATTED OUTPUT - ONLY NO ONBOARDING CUSTOMERS
         all_rows = []
         
         for dsa_mobile, customers in dsa_customers.items():
             # Filter for NO ONBOARDING customers who have deposit AND (ticket OR scan)
+            # AND are NOT in Report 1
             no_onboarding_customers = []
             for customer_mobile, customer_data in customers.items():
                 if (customer_data['match_status'] == 'NO ONBOARDING' and 
@@ -1041,7 +1057,7 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
             
             results_df = results_df[columns]
             
-            st.success(f"Report 2 generated successfully! Found {len(results_df[results_df['Customer Count'] != ''])} DSAs with NO ONBOARDING customers.")
+            st.success(f"Report 2 generated successfully! Found {len(results_df[results_df['Customer Count'] != ''])} DSAs with NO ONBOARDING customers (excluding Report 1 customers).")
             
             # DEBUG: Show some statistics
             total_no_onboarding = results_df[results_df['match_status'] == 'NO ONBOARDING'].shape[0]
@@ -1056,7 +1072,7 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
                 'Customer Count', 'Deposit Count', 'Ticket Count', 
                 'Scan To Send Count', 'Payment'
             ])
-            st.info("No NO ONBOARDING customers found meeting the criteria.")
+            st.info("No NO ONBOARDING customers found meeting the criteria (or all are already in Report 1).")
         
         # Return all cleaned dataframes for debugging
         return {
@@ -1068,7 +1084,8 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
             "deposit_df": deposit_df,  # Add cleaned deposit dataframe
             "ticket_df": ticket_df,    # Add cleaned ticket dataframe  
             "scan_df": scan_df,        # Add cleaned scan dataframe
-            "onboarding_df": onboarding_df  # Add cleaned onboarding dataframe
+            "onboarding_df": onboarding_df,  # Add cleaned onboarding dataframe
+            "report1_excluded_customers": report1_excluded_customers_clean  # Add excluded customers
         }
         
     except Exception as e:
@@ -1076,143 +1093,6 @@ def process_report_2(onboarding_df, deposit_df, ticket_df, scan_df, start_date=N
         import traceback
         st.error(f"Traceback: {traceback.format_exc()}")
         return None
-
-def debug_report_2_missing_customers(report_2_data, original_deposit_df, original_ticket_df, original_scan_df):
-    """Debug function to identify why customers are being missed in Report 2"""
-    if not report_2_data:
-        st.warning("No Report 2 data available for debugging")
-        return
-    
-    if "report_2_results" not in report_2_data:
-        st.warning("Report 2 results not available")
-        return
-    
-    results_df = report_2_data["report_2_results"]
-    
-    # Check if we have cleaned deposit data
-    if "deposit_df" in report_2_data and not report_2_data["deposit_df"].empty:
-        # Use cleaned deposit data if available
-        all_deposit_customers = set(report_2_data["deposit_df"]['customer_mobile_clean'].dropna().unique())
-        st.info(f"Using cleaned deposit data with {len(all_deposit_customers)} unique customers")
-    else:
-        # Try to use original deposit data and clean it
-        st.warning("Using original deposit data for debugging - may not match cleaned data")
-        # Find customer column in original data
-        customer_cols = ['User Identifier', 'user_id', 'Customer Mobile', 'customer_mobile', 'Mobile', 'Created By']
-        deposit_customer_col = None
-        for col in customer_cols:
-            if col in original_deposit_df.columns:
-                deposit_customer_col = col
-                break
-        
-        if deposit_customer_col:
-            def clean_debug_mobile(mobile):
-                if pd.isna(mobile):
-                    return None
-                mobile_str = str(mobile)
-                mobile_clean = ''.join(filter(str.isdigit, mobile_str))
-                if len(mobile_clean) >= 7:
-                    return mobile_clean[-7:]
-                return mobile_clean
-            
-            cleaned_mobiles = original_deposit_df[deposit_customer_col].apply(clean_debug_mobile)
-            all_deposit_customers = set(cleaned_mobiles.dropna().unique())
-        else:
-            st.error("Cannot find customer column in deposit data for debugging")
-            return
-    
-    # Get customers in report
-    report_customers = set(results_df['customer_mobile'].dropna().unique())
-    
-    # Find missing customers
-    missing_customers = all_deposit_customers - report_customers
-    
-    if missing_customers:
-        st.warning(f"Found {len(missing_customers)} customers in deposit data but not in Report 2")
-        
-        # Sample some missing customers to debug
-        sample_missing = list(missing_customers)[:10]  # Show first 10
-        st.write(f"Sample missing customers (first 10): {sample_missing}")
-        
-        # Check why they're missing - check if they have ticket or scan activity
-        ticket_customers = set()
-        scan_customers = set()
-        
-        if "ticket_df" in report_2_data and not report_2_data["ticket_df"].empty:
-            ticket_customers = set(report_2_data["ticket_df"]['customer_mobile_clean'].dropna().unique())
-        elif original_ticket_df is not None and not original_ticket_df.empty:
-            # Try to clean original ticket data
-            ticket_cols = ['user_id', 'User Identifier', 'customer_mobile', 'Mobile', 'Created By']
-            for col in ticket_cols:
-                if col in original_ticket_df.columns:
-                    def clean_ticket_mobile(mobile):
-                        if pd.isna(mobile):
-                            return None
-                        mobile_str = str(mobile)
-                        mobile_clean = ''.join(filter(str.isdigit, mobile_str))
-                        if len(mobile_clean) >= 7:
-                            return mobile_clean[-7:]
-                        return mobile_clean
-                    
-                    cleaned = original_ticket_df[col].apply(clean_ticket_mobile)
-                    ticket_customers = set(cleaned.dropna().unique())
-                    break
-        
-        if "scan_df" in report_2_data and not report_2_data["scan_df"].empty:
-            scan_customers = set(report_2_data["scan_df"]['customer_mobile_clean'].dropna().unique())
-        elif original_scan_df is not None and not original_scan_df.empty:
-            # Try to clean original scan data
-            scan_cols = ['user_id', 'User Identifier', 'customer_mobile', 'Mobile', 'Created By']
-            for col in scan_cols:
-                if col in original_scan_df.columns:
-                    def clean_scan_mobile(mobile):
-                        if pd.isna(mobile):
-                            return None
-                        mobile_str = str(mobile)
-                        mobile_clean = ''.join(filter(str.isdigit, mobile_str))
-                        if len(mobile_clean) >= 7:
-                            return mobile_clean[-7:]
-                        return mobile_clean
-                    
-                    cleaned = original_scan_df[col].apply(clean_scan_mobile)
-                    scan_customers = set(cleaned.dropna().unique())
-                    break
-        
-        # Check onboarding status for missing customers
-        onboarding_map = report_2_data.get("onboarding_map", {})
-        
-        st.write("### Debug Analysis for Missing Customers")
-        for customer in sample_missing[:5]:  # Show first 5 in detail
-            has_ticket = customer in ticket_customers
-            has_scan = customer in scan_customers
-            is_onboarded = customer in onboarding_map
-            
-            st.write(f"**Customer {customer}:**")
-            st.write(f"  - Has ticket activity: {has_ticket}")
-            st.write(f"  - Has scan activity: {has_scan}")
-            st.write(f"  - Is onboarded: {is_onboarded}")
-            if is_onboarded:
-                st.write(f"  - Onboarded by: {onboarding_map[customer]}")
-            st.write(f"  - Would be included if: Deposit + (Ticket OR Scan) AND NOT Onboarded")
-            st.write(f"  - Status: {'MISSING - No ticket/scan' if not (has_ticket or has_scan) else 'MISSING - Is onboarded' if is_onboarded else 'SHOULD BE INCLUDED'}")
-            st.write("---")
-        
-        # Summary statistics
-        missing_with_ticket = len([c for c in missing_customers if c in ticket_customers])
-        missing_with_scan = len([c for c in missing_customers if c in scan_customers])
-        missing_with_activity = len([c for c in missing_customers if c in ticket_customers or c in scan_customers])
-        missing_onboarded = len([c for c in missing_customers if c in onboarding_map])
-        
-        st.write("### Summary of Missing Customers")
-        st.write(f"Total missing customers: {len(missing_customers)}")
-        st.write(f"Missing customers with ticket activity: {missing_with_ticket}")
-        st.write(f"Missing customers with scan activity: {missing_with_scan}")
-        st.write(f"Missing customers with any activity: {missing_with_activity}")
-        st.write(f"Missing customers that are onboarded: {missing_onboarded}")
-        st.write(f"Missing customers that should be in report (activity + not onboarded): {missing_with_activity - missing_onboarded}")
-    else:
-        st.success("No missing customers found! All deposit customers are accounted for in Report 2.")
-
 def generate_payment_report(report_1_data, report_2_data):
     """Generate Payment report combining earnings from Report 1 and Report 2"""
     try:
